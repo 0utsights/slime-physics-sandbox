@@ -54,6 +54,14 @@ namespace Hideout.Slime
         public float groundedDamping = 6f;
         public float groundedCenterDamping = 3f;
 
+        [Header("Impact Recovery")]
+        [Tooltip("Max radial stretch as a multiple of bodyRadius before elastic recovery fires. 1.5–2.0 recommended.")]
+        public float maxDeformationRatio = 1.8f;
+        [Tooltip("Shape match strength boost applied the moment recovery triggers. Higher = snappier.")]
+        public float recoveryStrength = 12f;
+        [Tooltip("Rate at which the recovery boost fades back to zero (units/sec).")]
+        public float recoveryDecay = 5f;
+
         [Header("Angular Separation")]
         [Tooltip("Minimum angular gap between nodes as fraction of ideal. 0.5–0.7 recommended.")]
         public float minAngularSeparation = 0.6f;
@@ -95,6 +103,7 @@ namespace Hideout.Slime
 
         private float _currentPerimeterDamping;
         private float _currentCenterDamping;
+        private float _recoveryStrength;
 
         private PhysicsMaterial2D _slipperyMaterial;
         private GameObject _nodesParent;
@@ -114,6 +123,7 @@ namespace Hideout.Slime
             UpdatePerimeterPositions();
             UpdateGroundedRatio();
             UpdateDamping();
+            UpdateImpactRecovery();
             UpdateRestLengths();
             ApplyShapeMatching();
             EnforceAngularSeparation();
@@ -257,6 +267,32 @@ namespace Hideout.Slime
             _centerBody.linearDamping = _currentCenterDamping;
         }
 
+        private void UpdateImpactRecovery()
+        {
+            // Centroid
+            Vector2 centroid = _centerBody.position;
+            for (int i = 0; i < nodeCount; i++)
+                centroid += _perimeterBodies[i].position;
+            centroid /= (nodeCount + 1);
+
+            float threshold = bodyRadius * maxDeformationRatio;
+            bool overThreshold = false;
+            for (int i = 0; i < nodeCount; i++)
+            {
+                if (Vector2.Distance(_perimeterBodies[i].position, centroid) > threshold)
+                {
+                    overThreshold = true;
+                    break;
+                }
+            }
+
+            if (overThreshold)
+                _recoveryStrength = recoveryStrength;
+            else
+                _recoveryStrength = Mathf.MoveTowards(
+                    _recoveryStrength, 0f, recoveryDecay * Time.fixedDeltaTime);
+        }
+
         private void UpdateRestLengths()
         {
             Vector2 center = _centerBody.position;
@@ -268,11 +304,22 @@ namespace Hideout.Slime
 
                 float currentR = _radialSprings[i].distance;
                 float actualR  = Vector2.Distance(_perimeterBodies[i].position, center);
-                float maxR     = _originalRadialDist[i] * maxSpreadMultiplier;
-                float targetR  = Mathf.Clamp(actualR, _originalRadialDist[i], maxR);
-                float newR     = Mathf.MoveTowards(currentR, targetR, spreadRate * dt);
-                if (actualR < currentR)
-                    newR = Mathf.MoveTowards(currentR, _originalRadialDist[i], recoveryRate * dt);
+                float newR;
+                if (_recoveryStrength > 0f)
+                {
+                    // Snap rest length back to original so radial springs pull nodes in
+                    newR = Mathf.MoveTowards(
+                        currentR, _originalRadialDist[i],
+                        spreadRate * (1f + _recoveryStrength) * dt);
+                }
+                else
+                {
+                    float maxR    = _originalRadialDist[i] * maxSpreadMultiplier;
+                    float targetR = Mathf.Clamp(actualR, _originalRadialDist[i], maxR);
+                    newR = Mathf.MoveTowards(currentR, targetR, spreadRate * dt);
+                    if (actualR < currentR)
+                        newR = Mathf.MoveTowards(currentR, _originalRadialDist[i], recoveryRate * dt);
+                }
                 _radialSprings[i].distance = newR;
 
                 float currentN = _neighborSprings[i].distance;
@@ -314,7 +361,8 @@ namespace Hideout.Slime
                 Vector2 goal = centroid + new Vector2(
                     r.x * cos - r.y * sin,
                     r.x * sin + r.y * cos);
-                _perimeterBodies[i].AddForce((goal - _perimeterBodies[i].position) * shapeMatchStrength);
+                _perimeterBodies[i].AddForce(
+                    (goal - _perimeterBodies[i].position) * (shapeMatchStrength + _recoveryStrength));
             }
         }
 

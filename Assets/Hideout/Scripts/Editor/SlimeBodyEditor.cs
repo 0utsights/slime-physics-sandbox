@@ -101,6 +101,12 @@ namespace Hideout.Slime.Editor
                 DrawProp("groundedCenterDamping", "Center Damping");
             });
 
+            DrawSection("Impact Recovery", () => {
+                DrawProp("maxDeformationRatio", "Max Deformation Ratio");
+                DrawProp("recoveryStrength",    "Recovery Strength");
+                DrawProp("recoveryDecay",       "Recovery Decay");
+            });
+
             DrawSection("Angular Separation", () => {
                 DrawProp("minAngularSeparation", "Min Angular Separation");
                 DrawProp("separationForce",      "Separation Force");
