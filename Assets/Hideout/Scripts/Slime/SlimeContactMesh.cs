@@ -7,9 +7,19 @@ namespace Hideout.Slime
     /// Renders a contact skirt between slime perimeter nodes and terrain surfaces,
     /// closing the visual gap caused by the collider radius.
     /// Attach to the same GameObject as SlimeBody and SlimeMesh.
+    ///
     /// Two modes:
     ///   GapFill — thin quads that just close the collider gap.
     ///   Pool    — wider quads that extend onto the surface for a liquid pooling look.
+    ///
+    /// Fix log:
+    ///   - Raycast origin offset by colliderRadius so the cast starts at the physical
+    ///     collider surface edge, not the node center (prevents immediate self-hit).
+    ///   - Degenerate (no-hit) tipPos now projects to full cast endpoint instead of
+    ///     collapsing back to nodePos — quads have correct width even off terrain.
+    ///   - Uses parent transform.InverseTransformPoint instead of child (child is
+    ///     identity-relative, so the child call was redundant indirection).
+    ///   - Null/empty guard on PerimeterPositions in LateUpdate, matching SlimeMesh style.
     /// </summary>
     [RequireComponent(typeof(SlimeBody))]
     public class SlimeContactMesh : MonoBehaviour
@@ -37,7 +47,6 @@ namespace Hideout.Slime
 
         private SlimeBody _body;
         private Mesh _mesh;
-        private Transform _childTransform;
 
         private Vector3[] _vertices;
         private int[]     _triangles;
@@ -55,7 +64,6 @@ namespace Hideout.Slime
             child.transform.localPosition = Vector3.zero;
             child.transform.localRotation = Quaternion.identity;
             child.transform.localScale    = Vector3.one;
-            _childTransform = child.transform;
 
             var filter   = child.AddComponent<MeshFilter>();
             var renderer = child.AddComponent<MeshRenderer>();
@@ -111,11 +119,13 @@ namespace Hideout.Slime
         private void LateUpdate()
         {
             if (!_ready) return;
+            if (_body == null || _body.PerimeterPositions == null ||
+                _body.nodeCount == 0 || _body.PerimeterPositions.Length == 0) return;
 
-            Vector2 center    = _body.CenterPosition;
-            int n             = _body.nodeCount;
-            float castDist    = mode == ContactMode.GapFill ? gapFillDistance : poolDistance;
-            float halfWidth   = (mode == ContactMode.GapFill ? gapFillWidth : poolWidth) * 0.5f;
+            Vector2 center  = _body.CenterPosition;
+            int n           = _body.nodeCount;
+            float castDist  = mode == ContactMode.GapFill ? gapFillDistance : poolDistance;
+            float halfWidth = (mode == ContactMode.GapFill ? gapFillWidth : poolWidth) * 0.5f;
 
             for (int i = 0; i < n; i++)
             {
@@ -123,16 +133,24 @@ namespace Hideout.Slime
                 Vector2 dir     = (nodePos - center).normalized;
                 Vector2 tangent = new Vector2(-dir.y, dir.x);
 
-                RaycastHit2D hit = Physics2D.Raycast(nodePos, dir, castDist, terrainLayer);
+                // BUG FIX: offset ray origin past the collider sphere so we don't
+                // immediately self-hit terrain that the collider is already touching.
+                Vector2 rayOrigin = nodePos + dir * _body.colliderRadius;
+                RaycastHit2D hit  = Physics2D.Raycast(rayOrigin, dir, castDist, terrainLayer);
 
-                // Degenerate (zero-area) quad when no surface is hit
-                Vector2 tipPos = hit.collider != null ? hit.point : nodePos;
+                // BUG FIX: degenerate (no-hit) case projects to the full cast endpoint
+                // rather than collapsing back to nodePos (which produced zero-area quads).
+                Vector2 tipPos = hit.collider != null
+                    ? hit.point
+                    : rayOrigin + dir * castDist;
 
                 int vi = i * 4;
-                _vertices[vi]     = _childTransform.InverseTransformPoint(nodePos - tangent * halfWidth);
-                _vertices[vi + 1] = _childTransform.InverseTransformPoint(nodePos + tangent * halfWidth);
-                _vertices[vi + 2] = _childTransform.InverseTransformPoint(tipPos  + tangent * halfWidth);
-                _vertices[vi + 3] = _childTransform.InverseTransformPoint(tipPos  - tangent * halfWidth);
+                // BUG FIX: use parent transform.InverseTransformPoint — the child is
+                // identity-relative so the old child call was redundant indirection.
+                _vertices[vi]     = transform.InverseTransformPoint(nodePos - tangent * halfWidth);
+                _vertices[vi + 1] = transform.InverseTransformPoint(nodePos + tangent * halfWidth);
+                _vertices[vi + 2] = transform.InverseTransformPoint(tipPos  + tangent * halfWidth);
+                _vertices[vi + 3] = transform.InverseTransformPoint(tipPos  - tangent * halfWidth);
             }
 
             _mesh.SetVertices(_vertices);
