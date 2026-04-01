@@ -3,11 +3,16 @@ using UnityEngine;
 namespace Hideout.Slime
 {
     /// <summary>
-    /// Attached to each perimeter node. Detects corner trapping via
-    /// diverging contact normals and applies an escape impulse.
+    /// Attached to each perimeter node.
+    /// Tracks grounded state and contact normals.
+    /// Applies corner escape impulse when wedged.
+    /// Exposes IsGrounded to SlimeBody for damping switching.
     /// </summary>
     public class SlimeNodeContact : MonoBehaviour
     {
+        public bool IsGrounded { get; private set; }
+        public Vector2 ContactNormal { get; private set; }
+
         private SlimeBody _body;
         private Rigidbody2D _rb;
         private float _escapeForce;
@@ -24,19 +29,30 @@ namespace Hideout.Slime
         private void OnCollisionStay2D(Collision2D collision)
         {
             int count = collision.GetContacts(_contacts);
-            if (count < 2) return;
+            IsGrounded = true;
 
-            Vector2 n0 = _contacts[0].normal;
-            Vector2 n1 = _contacts[1].normal;
+            if (count >= 1)
+                ContactNormal = _contacts[0].normal;
 
-            // Two normals diverging = wedged in a corner
-            if (Vector2.Dot(n0, n1) < 0.3f)
+            // Corner escape: two diverging normals = wedged
+            if (count >= 2)
             {
-                Vector2 escape  = (n0 + n1).normalized;
-                Vector2 toCenter = (_body.CenterPosition - (Vector2)transform.position).normalized;
-                Vector2 dir     = (escape + toCenter * 0.5f).normalized;
-                _rb.AddForce(dir * _escapeForce, ForceMode2D.Impulse);
+                Vector2 n0 = _contacts[0].normal;
+                Vector2 n1 = _contacts[1].normal;
+                if (Vector2.Dot(n0, n1) < 0.3f)
+                {
+                    Vector2 escape   = (n0 + n1).normalized;
+                    Vector2 toCenter = (_body.CenterPosition - (Vector2)transform.position).normalized;
+                    Vector2 dir      = (escape + toCenter * 0.5f).normalized;
+                    _rb.AddForce(dir * _escapeForce, ForceMode2D.Impulse);
+                }
             }
+        }
+
+        private void OnCollisionExit2D(Collision2D collision)
+        {
+            IsGrounded = false;
+            ContactNormal = Vector2.zero;
         }
     }
 }

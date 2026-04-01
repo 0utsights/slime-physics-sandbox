@@ -15,6 +15,12 @@ namespace Hideout.Slime
         public string sortingLayerName = "Default";
         public int sortingOrder = 0;
 
+        [Header("Mesh Follow Speed")]
+        [Tooltip("How fast mesh follows nodes when airborne. High = sharp impact.")]
+        public float airborneMeshFollowSpeed = 40f;
+        [Tooltip("How fast mesh follows nodes when grounded. Low = viscous settling.")]
+        public float groundedMeshFollowSpeed = 10f;
+
         private SlimeBody _body;
         private Mesh _mesh;
         private MeshFilter _filter;
@@ -24,16 +30,18 @@ namespace Hideout.Slime
         private int[] _triangles;
         private Vector2[] _uvs;
         private Vector2[] _sortedPositions;
+        private Vector2[] _smoothedPositions;
         private float[] _angles;
         private int[] _sortIndices;
 
         private int _smoothedCount;
         private bool _ready;
+        private bool _initialized;
 
         private IEnumerator Start()
         {
             _body = GetComponent<SlimeBody>();
-            yield return null; // wait one frame for SlimeBody.Awake to finish
+            yield return null;
             SetupRenderer();
             PreAllocate();
             BuildMesh();
@@ -66,14 +74,15 @@ namespace Hideout.Slime
 
         private void PreAllocate()
         {
-            _smoothedCount   = _body.nodeCount * smoothSteps;
-            int vertexCount  = _smoothedCount + 1;
-            _vertices        = new Vector3[vertexCount];
-            _uvs             = new Vector2[vertexCount];
-            _triangles       = new int[_smoothedCount * 3];
-            _sortedPositions = new Vector2[_body.nodeCount];
-            _angles          = new float[_body.nodeCount];
-            _sortIndices     = new int[_body.nodeCount];
+            _smoothedCount     = _body.nodeCount * smoothSteps;
+            int vertexCount    = _smoothedCount + 1;
+            _vertices          = new Vector3[vertexCount];
+            _uvs               = new Vector2[vertexCount];
+            _triangles         = new int[_smoothedCount * 3];
+            _sortedPositions   = new Vector2[_body.nodeCount];
+            _smoothedPositions = new Vector2[_body.nodeCount];
+            _angles            = new float[_body.nodeCount];
+            _sortIndices       = new int[_body.nodeCount];
         }
 
         private void BuildMesh()
@@ -93,6 +102,7 @@ namespace Hideout.Slime
             Vector2 center = _body.CenterPosition;
             int n = _body.nodeCount;
 
+            // Sort by angle
             for (int i = 0; i < n; i++)
             {
                 Vector2 dir = _body.PerimeterPositions[i] - center;
@@ -103,15 +113,36 @@ namespace Hideout.Slime
             for (int i = 0; i < n; i++)
                 _sortedPositions[i] = _body.PerimeterPositions[_sortIndices[i]];
 
+            // Snap on first frame
+            if (!_initialized)
+            {
+                for (int i = 0; i < n; i++)
+                    _smoothedPositions[i] = _sortedPositions[i];
+                _initialized = true;
+            }
+
+            // Dynamic mesh follow speed based on grounded ratio
+            float followSpeed = Mathf.Lerp(
+                airborneMeshFollowSpeed,
+                groundedMeshFollowSpeed,
+                _body.GroundedRatio);
+
+            float lerpT = 1f - Mathf.Exp(-followSpeed * Time.deltaTime);
+            for (int i = 0; i < n; i++)
+                _smoothedPositions[i] = Vector2.Lerp(
+                    _smoothedPositions[i], _sortedPositions[i], lerpT);
+
+            // Center vertex
             _vertices[0] = transform.InverseTransformPoint(center);
             _uvs[0] = new Vector2(0.5f, 0.5f);
 
+            // Centripetal Catmull-Rom
             for (int i = 0; i < n; i++)
             {
-                Vector2 p0 = _sortedPositions[(i - 1 + n) % n];
-                Vector2 p1 = _sortedPositions[i];
-                Vector2 p2 = _sortedPositions[(i + 1) % n];
-                Vector2 p3 = _sortedPositions[(i + 2) % n];
+                Vector2 p0 = _smoothedPositions[(i - 1 + n) % n];
+                Vector2 p1 = _smoothedPositions[i];
+                Vector2 p2 = _smoothedPositions[(i + 1) % n];
+                Vector2 p3 = _smoothedPositions[(i + 2) % n];
 
                 for (int s = 0; s < smoothSteps; s++)
                 {
@@ -126,6 +157,7 @@ namespace Hideout.Slime
                 }
             }
 
+            // Triangle fan
             for (int i = 0; i < _smoothedCount; i++)
             {
                 int ti = i * 3;

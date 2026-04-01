@@ -3,10 +3,11 @@ using UnityEngine;
 namespace Hideout.Slime
 {
     /// <summary>
-    /// Viscous soft-body slime with weak shape matching for stability.
-    /// Dynamic rest lengths drive spreading. Shape matching at low stiffness
-    /// prevents corner trapping without fighting deformation.
-    /// Zero friction physics material on nodes prevents corner gripping.
+    /// Viscous soft-body slime with contact-aware damping.
+    /// During freefall: low damping + high gravity = real acceleration.
+    /// On landing: high damping = viscous settling.
+    /// Shape matching at low stiffness prevents corner trapping.
+    /// Dynamic rest lengths drive spreading behavior.
     /// Zero per-frame GC allocation.
     /// </summary>
     [DefaultExecutionOrder(-10)]
@@ -18,35 +19,46 @@ namespace Hideout.Slime
         [Range(6, 24)]
         public int nodeCount = 12;
         public float bodyRadius = 0.5f;
-        public float colliderRadius = 0.000001f;
+        public float colliderRadius = 0.05f;
 
         [Header("Springs")]
-        [Tooltip("Radial spring frequency. 3–6 for viscous feel.")]
         public float radialFrequency = 6f;
-        [Tooltip("Neighbor spring frequency. Lower = more lateral spread.")]
         public float neighborFrequency = 2.5f;
         [Range(0f, 1f)]
         public float springDamping = 0.95f;
 
         [Header("Shape Matching")]
-        [Tooltip("Keep low (0.05–0.2) — just enough to prevent corner trapping.")]
-        public float shapeMatchStrength = 2f;
+        [Tooltip("Keep low (0.05–0.5) — prevents corner trapping without fighting spread.")]
+        public float shapeMatchStrength = 0.3f;
 
         [Header("Dynamic Rest Lengths")]
         public float spreadRate = 1.2f;
         public float recoveryRate = 0.3f;
         public float maxSpreadMultiplier = 1.5f;
 
-        [Header("Mass & Damping")]
+        [Header("Mass")]
         public float centerMass = 3f;
         public float perimeterMass = 0.8f;
-        public float gravityScale = 1f;
-        public float linearDamping = 6f;
-        public float centerDamping = 2f;
 
-        [Header("Corner Escape")]
-        [Tooltip("Impulse applied when a node detects two diverging contact normals.")]
-        public float cornerEscapeForce = 3f;
+        [Header("Gravity")]
+        [Tooltip("Higher = faster fall, more impact. 1 recommended.")]
+        public float gravityScale = 1f;
+
+        [Header("Damping — Airborne")]
+        [Tooltip("Low damping during freefall so gravity can actually accelerate the slime.")]
+        public float airborneDamping = 0.5f;
+        public float airborneCenterDamping = 0.3f;
+
+        [Header("Damping — Grounded")]
+        [Tooltip("High damping when settled for viscous feel.")]
+        public float groundedDamping = 6f;
+        public float groundedCenterDamping = 3f;
+
+        [Header("Angular Separation")]
+        [Tooltip("Minimum angular gap between nodes as fraction of ideal. 0.5–0.7 recommended.")]
+        public float minAngularSeparation = 0.6f;
+        [Tooltip("Force pushing nodes apart when too close angularly.")]
+        public float separationForce = 5f;
 
         [Header("Debug")]
         public bool showGizmos = true;
@@ -54,12 +66,17 @@ namespace Hideout.Slime
         // ── Public ────────────────────────────────────────────────────────────
 
         public Vector2[] PerimeterPositions { get; private set; }
+
         public Vector2 CenterPosition => _centerBody != null
             ? (Vector2)_centerBody.position
             : (Vector2)transform.position;
+
         public Vector2 Velocity => _centerBody != null
             ? _centerBody.linearVelocity
             : Vector2.zero;
+
+        /// <summary>0 = fully airborne, 1 = fully grounded. Used by SlimeMesh.</summary>
+        public float GroundedRatio { get; private set; }
 
         // ── Internal ─────────────────────────────────────────────────────────
 
@@ -73,6 +90,12 @@ namespace Hideout.Slime
         private float[] _originalNeighborDist;
         private Vector2[] _restOffsets;
 
+        private const float DampingTransitionSpeed = 8f;
+        private const float CornerEscapeForce = 5f;
+
+        private float _currentPerimeterDamping;
+        private float _currentCenterDamping;
+
         private PhysicsMaterial2D _slipperyMaterial;
         private GameObject _nodesParent;
 
@@ -82,13 +105,18 @@ namespace Hideout.Slime
         {
             CreatePhysicsMaterial();
             BuildBody();
+            _currentPerimeterDamping = airborneDamping;
+            _currentCenterDamping    = airborneCenterDamping;
         }
 
         private void FixedUpdate()
         {
             UpdatePerimeterPositions();
+            UpdateGroundedRatio();
+            UpdateDamping();
             UpdateRestLengths();
             ApplyShapeMatching();
+            EnforceAngularSeparation();
         }
 
         // ── Construction ─────────────────────────────────────────────────────
@@ -97,7 +125,7 @@ namespace Hideout.Slime
         {
             _slipperyMaterial = new PhysicsMaterial2D("SlimeNode");
             _slipperyMaterial.friction = 0f;
-            _slipperyMaterial.bounciness = 0.1f;
+            _slipperyMaterial.bounciness = 0.05f;
         }
 
         private void BuildBody()
@@ -115,7 +143,7 @@ namespace Hideout.Slime
             _nodesParent.transform.SetParent(transform);
             _nodesParent.transform.localPosition = Vector3.zero;
 
-            _centerBody = CreateNode("Center", Vector2.zero, centerMass, 0.08f, centerDamping, false);
+            _centerBody = CreateNode("Center", Vector2.zero, centerMass, colliderRadius, airborneCenterDamping);
 
             float angleStep = 360f / nodeCount;
             for (int i = 0; i < nodeCount; i++)
@@ -124,11 +152,10 @@ namespace Hideout.Slime
                 Vector2 offset = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * bodyRadius;
                 _restOffsets[i] = offset;
                 _perimeterBodies[i] = CreateNode(
-                    $"Node_{i}", offset, perimeterMass, colliderRadius, linearDamping, true);
+                    $"Node_{i}", offset, perimeterMass, colliderRadius, airborneDamping);
 
-                // Attach contact tracker
                 _nodeContacts[i] = _perimeterBodies[i].gameObject.AddComponent<SlimeNodeContact>();
-                _nodeContacts[i].Init(this, cornerEscapeForce);
+                _nodeContacts[i].Init(this, CornerEscapeForce);
             }
 
             for (int i = 0; i < nodeCount; i++)
@@ -152,8 +179,7 @@ namespace Hideout.Slime
 
         private Rigidbody2D CreateNode(
             string nodeName, Vector2 localOffset,
-            float mass, float circleRadius,
-            float damping, bool isPerimeter)
+            float mass, float circleRadius, float damping)
         {
             var go = new GameObject(nodeName);
             go.transform.SetParent(_nodesParent.transform);
@@ -202,6 +228,35 @@ namespace Hideout.Slime
                 PerimeterPositions[i] = _perimeterBodies[i].position;
         }
 
+        private void UpdateGroundedRatio()
+        {
+            int groundedCount = 0;
+            for (int i = 0; i < nodeCount; i++)
+                if (_nodeContacts[i].IsGrounded) groundedCount++;
+
+            float targetRatio = groundedCount / (float)nodeCount;
+            GroundedRatio = Mathf.MoveTowards(
+                GroundedRatio, targetRatio,
+                DampingTransitionSpeed * Time.fixedDeltaTime);
+        }
+
+        private void UpdateDamping()
+        {
+            float targetPerimeter = Mathf.Lerp(airborneDamping, groundedDamping, GroundedRatio);
+            float targetCenter    = Mathf.Lerp(airborneCenterDamping, groundedCenterDamping, GroundedRatio);
+
+            _currentPerimeterDamping = Mathf.Lerp(
+                _currentPerimeterDamping, targetPerimeter,
+                DampingTransitionSpeed * Time.fixedDeltaTime);
+            _currentCenterDamping = Mathf.Lerp(
+                _currentCenterDamping, targetCenter,
+                DampingTransitionSpeed * Time.fixedDeltaTime);
+
+            for (int i = 0; i < nodeCount; i++)
+                _perimeterBodies[i].linearDamping = _currentPerimeterDamping;
+            _centerBody.linearDamping = _currentCenterDamping;
+        }
+
         private void UpdateRestLengths()
         {
             Vector2 center = _centerBody.position;
@@ -211,23 +266,21 @@ namespace Hideout.Slime
             {
                 int next = (i + 1) % nodeCount;
 
-                // Radial
-                float currentR  = _radialSprings[i].distance;
-                float actualR   = Vector2.Distance(_perimeterBodies[i].position, center);
-                float maxR      = _originalRadialDist[i] * maxSpreadMultiplier;
-                float targetR   = Mathf.Clamp(actualR, _originalRadialDist[i], maxR);
-                float newR      = Mathf.MoveTowards(currentR, targetR, spreadRate * dt);
+                float currentR = _radialSprings[i].distance;
+                float actualR  = Vector2.Distance(_perimeterBodies[i].position, center);
+                float maxR     = _originalRadialDist[i] * maxSpreadMultiplier;
+                float targetR  = Mathf.Clamp(actualR, _originalRadialDist[i], maxR);
+                float newR     = Mathf.MoveTowards(currentR, targetR, spreadRate * dt);
                 if (actualR < currentR)
                     newR = Mathf.MoveTowards(currentR, _originalRadialDist[i], recoveryRate * dt);
                 _radialSprings[i].distance = newR;
 
-                // Neighbor
-                float currentN  = _neighborSprings[i].distance;
-                float actualN   = Vector2.Distance(
+                float currentN = _neighborSprings[i].distance;
+                float actualN  = Vector2.Distance(
                     _perimeterBodies[i].position, _perimeterBodies[next].position);
-                float maxN      = _originalNeighborDist[i] * maxSpreadMultiplier;
-                float targetN   = Mathf.Clamp(actualN, _originalNeighborDist[i], maxN);
-                float newN      = Mathf.MoveTowards(currentN, targetN, spreadRate * dt);
+                float maxN     = _originalNeighborDist[i] * maxSpreadMultiplier;
+                float targetN  = Mathf.Clamp(actualN, _originalNeighborDist[i], maxN);
+                float newN     = Mathf.MoveTowards(currentN, targetN, spreadRate * dt);
                 if (actualN < currentN)
                     newN = Mathf.MoveTowards(currentN, _originalNeighborDist[i], recoveryRate * dt);
                 _neighborSprings[i].distance = newN;
@@ -236,32 +289,68 @@ namespace Hideout.Slime
 
         private void ApplyShapeMatching()
         {
-            // Compute centroid
             Vector2 centroid = _centerBody.position;
             for (int i = 0; i < nodeCount; i++)
                 centroid += _perimeterBodies[i].position;
             centroid /= (nodeCount + 1);
 
-            // Compute average rotation offset
             float totalAngle = 0f;
             for (int i = 0; i < nodeCount; i++)
             {
-                Vector2 offset  = _perimeterBodies[i].position - centroid;
-                float current   = Mathf.Atan2(offset.y, offset.x);
-                float rest      = Mathf.Atan2(_restOffsets[i].y, _restOffsets[i].x);
-                totalAngle     += Mathf.DeltaAngle(rest * Mathf.Rad2Deg, current * Mathf.Rad2Deg);
+                Vector2 offset = _perimeterBodies[i].position - centroid;
+                float current  = Mathf.Atan2(offset.y, offset.x);
+                float rest     = Mathf.Atan2(_restOffsets[i].y, _restOffsets[i].x);
+                totalAngle    += Mathf.DeltaAngle(
+                    rest * Mathf.Rad2Deg, current * Mathf.Rad2Deg);
             }
+
             float rot = totalAngle / nodeCount * Mathf.Deg2Rad;
             float cos = Mathf.Cos(rot);
             float sin = Mathf.Sin(rot);
 
-            // Apply weak corrective force toward rotated rest position
             for (int i = 0; i < nodeCount; i++)
             {
                 Vector2 r    = _restOffsets[i];
-                Vector2 goal = centroid + new Vector2(r.x * cos - r.y * sin, r.x * sin + r.y * cos);
-                Vector2 delta = goal - _perimeterBodies[i].position;
-                _perimeterBodies[i].AddForce(delta * shapeMatchStrength);
+                Vector2 goal = centroid + new Vector2(
+                    r.x * cos - r.y * sin,
+                    r.x * sin + r.y * cos);
+                _perimeterBodies[i].AddForce((goal - _perimeterBodies[i].position) * shapeMatchStrength);
+            }
+        }
+
+        private void EnforceAngularSeparation()
+        {
+            Vector2 center = _centerBody.position;
+            float idealAngle = (2f * Mathf.PI) / nodeCount;
+            float minAngle = idealAngle * minAngularSeparation;
+
+            for (int i = 0; i < nodeCount; i++)
+            {
+                int next = (i + 1) % nodeCount;
+
+                Vector2 dirA = _perimeterBodies[i].position - center;
+                Vector2 dirB = _perimeterBodies[next].position - center;
+
+                float angleA = Mathf.Atan2(dirA.y, dirA.x);
+                float angleB = Mathf.Atan2(dirB.y, dirB.x);
+
+                float diff = Mathf.DeltaAngle(
+                    angleA * Mathf.Rad2Deg,
+                    angleB * Mathf.Rad2Deg) * Mathf.Deg2Rad;
+
+                if (Mathf.Abs(diff) < minAngle)
+                {
+                    float violation = minAngle - Mathf.Abs(diff);
+                    float sign = diff >= 0 ? 1f : -1f;
+
+                    Vector2 tangA = new Vector2(-dirA.normalized.y,  dirA.normalized.x);
+                    Vector2 tangB = new Vector2(-dirB.normalized.y,  dirB.normalized.x);
+
+                    _perimeterBodies[i].AddForce(
+                        -tangA * sign * violation * separationForce);
+                    _perimeterBodies[next].AddForce(
+                        tangB * sign * violation * separationForce);
+                }
             }
         }
 
