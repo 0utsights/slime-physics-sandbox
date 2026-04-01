@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 
 namespace Hideout.Slime
@@ -27,21 +28,30 @@ namespace Hideout.Slime
         private int[] _sortIndices;
 
         private int _smoothedCount;
+        private bool _ready;
 
-        private void Awake()
+        private IEnumerator Start()
         {
             _body = GetComponent<SlimeBody>();
+            yield return null; // wait one frame for SlimeBody.Awake to finish
             SetupRenderer();
             PreAllocate();
             BuildMesh();
+            _ready = true;
         }
 
-        private void LateUpdate() => UpdateMesh();
+        private void LateUpdate()
+        {
+            if (_ready) UpdateMesh();
+        }
 
         private void SetupRenderer()
         {
-            _filter = GetComponent<MeshFilter>(); if (_filter == null) _filter = gameObject.AddComponent<MeshFilter>();
-            _renderer = GetComponent<MeshRenderer>(); if (_renderer == null) _renderer = gameObject.AddComponent<MeshRenderer>();
+            _filter = GetComponent<MeshFilter>();
+            if (_filter == null) _filter = gameObject.AddComponent<MeshFilter>();
+
+            _renderer = GetComponent<MeshRenderer>();
+            if (_renderer == null) _renderer = gameObject.AddComponent<MeshRenderer>();
 
             if (material == null)
             {
@@ -77,28 +87,25 @@ namespace Hideout.Slime
 
         private void UpdateMesh()
         {
-            if (_body.PerimeterPositions == null) return;
+            if (_body == null || _body.PerimeterPositions == null ||
+                _body.nodeCount == 0 || _body.PerimeterPositions.Length == 0) return;
 
             Vector2 center = _body.CenterPosition;
             int n = _body.nodeCount;
 
-            // Sort nodes by angle around center to prevent triangle inversion
             for (int i = 0; i < n; i++)
             {
                 Vector2 dir = _body.PerimeterPositions[i] - center;
                 _angles[i] = Mathf.Atan2(dir.y, dir.x);
                 _sortIndices[i] = i;
             }
-            SortByAngle(n);
-
+            InsertionSortByAngle(n);
             for (int i = 0; i < n; i++)
                 _sortedPositions[i] = _body.PerimeterPositions[_sortIndices[i]];
 
-            // Center vertex
             _vertices[0] = transform.InverseTransformPoint(center);
             _uvs[0] = new Vector2(0.5f, 0.5f);
 
-            // Smoothed perimeter
             for (int i = 0; i < n; i++)
             {
                 Vector2 p0 = _sortedPositions[(i - 1 + n) % n];
@@ -108,8 +115,8 @@ namespace Hideout.Slime
 
                 for (int s = 0; s < smoothSteps; s++)
                 {
-                    float t = s / (float)smoothSteps;
-                    Vector2 pt = CatmullRom(p0, p1, p2, p3, t);
+                    float t    = s / (float)smoothSteps;
+                    Vector2 pt = CentripetalCatmullRom(p0, p1, p2, p3, t);
 
                     int vi = 1 + i * smoothSteps + s;
                     _vertices[vi] = transform.InverseTransformPoint(pt);
@@ -119,7 +126,6 @@ namespace Hideout.Slime
                 }
             }
 
-            // Triangle fan
             for (int i = 0; i < _smoothedCount; i++)
             {
                 int ti = i * 3;
@@ -135,8 +141,32 @@ namespace Hideout.Slime
             _mesh.RecalculateBounds();
         }
 
-        // Insertion sort — zero GC, fast for small n
-        private void SortByAngle(int n)
+        private static Vector2 CentripetalCatmullRom(
+            Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, float u)
+        {
+            float t0 = 0f;
+            float t1 = t0 + Mathf.Pow(Vector2.Distance(p0, p1), 0.5f);
+            float t2 = t1 + Mathf.Pow(Vector2.Distance(p1, p2), 0.5f);
+            float t3 = t2 + Mathf.Pow(Vector2.Distance(p2, p3), 0.5f);
+
+            if (Mathf.Approximately(t1, t0)) t1 = t0 + 0.0001f;
+            if (Mathf.Approximately(t2, t1)) t2 = t1 + 0.0001f;
+            if (Mathf.Approximately(t3, t2)) t3 = t2 + 0.0001f;
+
+            float t = Mathf.Lerp(t1, t2, u);
+
+            Vector2 A1 = (t1 - t) / (t1 - t0) * p0 + (t - t0) / (t1 - t0) * p1;
+            Vector2 A2 = (t2 - t) / (t2 - t1) * p1 + (t - t1) / (t2 - t1) * p2;
+            Vector2 A3 = (t3 - t) / (t3 - t2) * p2 + (t - t2) / (t3 - t2) * p3;
+
+            Vector2 B1 = (t2 - t) / (t2 - t0) * A1 + (t - t0) / (t2 - t0) * A2;
+            Vector2 B2 = (t3 - t) / (t3 - t1) * A2 + (t - t1) / (t3 - t1) * A3;
+
+            if (Mathf.Approximately(t2, t1)) return p2;
+            return (t2 - t) / (t2 - t1) * B1 + (t - t1) / (t2 - t1) * B2;
+        }
+
+        private void InsertionSortByAngle(int n)
         {
             for (int i = 1; i < n; i++)
             {
@@ -152,22 +182,9 @@ namespace Hideout.Slime
             }
         }
 
-        private static Vector2 CatmullRom(Vector2 p0, Vector2 p1, Vector2 p2, Vector2 p3, float t)
-        {
-            float t2 = t * t;
-            float t3 = t2 * t;
-            return 0.5f * (
-                2f * p1 +
-                (-p0 + p2) * t +
-                (2f * p0 - 5f * p1 + 4f * p2 - p3) * t2 +
-                (-p0 + 3f * p1 - 3f * p2 + p3) * t3
-            );
-        }
-
         private void OnDestroy()
         {
             if (_mesh != null) Destroy(_mesh);
         }
     }
 }
-

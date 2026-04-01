@@ -17,11 +17,11 @@ namespace Hideout.Slime.Editor
     public class SlimeBodyEditor : UnityEditor.Editor
     {
         // Colors
-        private static readonly Color NodeColor      = new Color(0.2f, 0.9f, 0.2f, 1f);
-        private static readonly Color RingColor      = new Color(0.2f, 0.9f, 0.2f, 0.6f);
-        private static readonly Color SpokeColor     = new Color(0.2f, 0.9f, 0.2f, 0.3f);
-        private static readonly Color CenterColor    = new Color(1f, 0.9f, 0.1f, 1f);
-        private static readonly Color NeighborColor  = new Color(0.2f, 0.6f, 1f, 0.4f);
+        private static readonly Color NodeColor     = new Color(0.2f, 0.9f, 0.2f, 1f);
+        private static readonly Color RingColor     = new Color(0.2f, 0.9f, 0.2f, 0.6f);
+        private static readonly Color SpokeColor    = new Color(0.2f, 0.9f, 0.2f, 0.3f);
+        private static readonly Color CenterColor   = new Color(1f, 0.9f, 0.1f, 1f);
+        private static readonly Color NeighborColor = new Color(0.2f, 0.6f, 1f, 0.4f);
 
         private void OnSceneGUI()
         {
@@ -33,7 +33,6 @@ namespace Hideout.Slime.Editor
             float angleStep = 360f / n;
             Vector3[] nodePositions = new Vector3[n];
 
-            // Compute preview positions
             for (int i = 0; i < n; i++)
             {
                 float angle = i * angleStep * Mathf.Deg2Rad;
@@ -59,13 +58,11 @@ namespace Hideout.Slime.Editor
             for (int i = 0; i < n; i++)
                 Handles.DrawLine(nodePositions[i], nodePositions[(i + 1) % n]);
 
-            // Node circles
+            // Node circles + labels
             Handles.color = NodeColor;
             for (int i = 0; i < n; i++)
             {
                 Handles.DrawWireDisc(nodePositions[i], Vector3.forward, slime.colliderRadius);
-
-                // Node label
                 Handles.Label(
                     nodePositions[i] + Vector3.up * (slime.colliderRadius + 0.05f),
                     i.ToString(),
@@ -81,10 +78,8 @@ namespace Hideout.Slime.Editor
 
         public override void OnInspectorGUI()
         {
-            SlimeBody slime = (SlimeBody)target;
             serializedObject.Update();
 
-            // Header
             EditorGUILayout.Space(4);
             GUIStyle headerStyle = new GUIStyle(EditorStyles.boldLabel)
             {
@@ -94,7 +89,6 @@ namespace Hideout.Slime.Editor
             EditorGUILayout.LabelField("Slime Body", headerStyle);
             EditorGUILayout.Space(2);
 
-            // Body Shape
             DrawSection("Body Shape", () =>
             {
                 DrawProp("nodeCount",      "Node Count");
@@ -102,7 +96,6 @@ namespace Hideout.Slime.Editor
                 DrawProp("colliderRadius", "Collider Radius");
             });
 
-            // Springs
             DrawSection("Springs", () =>
             {
                 DrawProp("radialFrequency",   "Radial Frequency");
@@ -110,7 +103,11 @@ namespace Hideout.Slime.Editor
                 DrawProp("springDamping",     "Damping Ratio");
             });
 
-            // Dynamic Rest Lengths
+            DrawSection("Shape Matching", () =>
+            {
+                DrawProp("shapeMatchStrength", "Shape Match Strength");
+            });
+
             DrawSection("Dynamic Rest Lengths", () =>
             {
                 DrawProp("spreadRate",          "Spread Rate");
@@ -118,17 +115,20 @@ namespace Hideout.Slime.Editor
                 DrawProp("maxSpreadMultiplier", "Max Spread Multiplier");
             });
 
-            // Mass & Damping
             DrawSection("Mass & Damping", () =>
             {
-                DrawProp("centerMass",     "Center Mass");
-                DrawProp("perimeterMass",  "Perimeter Mass");
-                DrawProp("gravityScale",   "Gravity Scale");
-                DrawProp("linearDamping",  "Linear Damping");
-                DrawProp("centerDamping",  "Center Damping");
+                DrawProp("centerMass",    "Center Mass");
+                DrawProp("perimeterMass", "Perimeter Mass");
+                DrawProp("gravityScale",  "Gravity Scale");
+                DrawProp("linearDamping", "Linear Damping");
+                DrawProp("centerDamping", "Center Damping");
             });
 
-            // Debug
+            DrawSection("Corner Escape", () =>
+            {
+                DrawProp("cornerEscapeForce", "Corner Escape Force");
+            });
+
             DrawSection("Debug", () =>
             {
                 DrawProp("showGizmos", "Show Gizmos");
@@ -136,7 +136,6 @@ namespace Hideout.Slime.Editor
 
             serializedObject.ApplyModifiedProperties();
 
-            // Force scene repaint so gizmos update live
             if (GUI.changed)
                 SceneView.RepaintAll();
         }
