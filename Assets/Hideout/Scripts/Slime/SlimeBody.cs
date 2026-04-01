@@ -1,3 +1,4 @@
+cat > "/home/nihil/1BIT/Assets/Hideout/Scripts/Slime/SlimeBody.cs" << 'EOF'
 using UnityEngine;
 
 namespace Hideout.Slime
@@ -6,7 +7,9 @@ namespace Hideout.Slime
     /// Core soft-body slime system.
     /// Generates a spring-mass network at runtime: one center Rigidbody2D
     /// surrounded by N perimeter Rigidbody2Ds connected by SpringJoint2Ds.
-    /// Apply movement forces via AddForce on the center node.
+    /// Shape matching forces pull nodes back to rest positions each frame.
+    /// Pressure forces push nodes outward when volume is lost.
+    /// Apply movement forces via AddMovementForce / AddImpulse.
     /// All arrays pre-allocated — zero per-frame GC allocations.
     /// </summary>
     public class SlimeBody : MonoBehaviour
@@ -26,11 +29,15 @@ namespace Hideout.Slime
 
         [Header("Spring Settings")]
         [Tooltip("Higher = stiffer, faster return to shape. 8–15 for firm jelly.")]
-        public float springFrequency = 10f;
+        public float springFrequency = 14f;
 
         [Tooltip("0 = no damping (infinite bounce). 0.5–0.7 = 1–3 bounces.")]
         [Range(0f, 1f)]
         public float springDamping = 0.6f;
+
+        [Header("Shape Matching")]
+        [Tooltip("How strongly nodes are pulled back to their rest shape. 10–30 for snappy recovery.")]
+        public float shapeMatchStrength = 25f;
 
         [Header("Mass")]
         public float centerMass = 2f;
@@ -39,14 +46,14 @@ namespace Hideout.Slime
 
         [Header("Volume Preservation")]
         [Tooltip("Strength of the outward pressure force keeping the slime from flattening.")]
-        public float pressureForce = 5f;
+        public float pressureForce = 8f;
 
         [Header("Debug")]
         public bool showGizmos = true;
 
         // ── Public state (read by SlimeMesh) ─────────────────────────────────
 
-        /// <summary>World positions of all perimeter nodes, updated every frame.</summary>
+        /// <summary>World positions of all perimeter nodes, updated every FixedUpdate.</summary>
         public Vector2[] PerimeterPositions { get; private set; }
 
         /// <summary>World position of the center node.</summary>
@@ -58,13 +65,11 @@ namespace Hideout.Slime
 
         private Rigidbody2D _centerBody;
         private Rigidbody2D[] _perimeterBodies;
-        private SpringJoint2D[] _centerSprings;    // perimeter → center
-        private SpringJoint2D[] _neighborSprings;  // perimeter → next neighbor
+        private SpringJoint2D[] _centerSprings;
+        private SpringJoint2D[] _neighborSprings;
 
         private float _targetArea;
-        private Vector2[] _restOffsets;             // rest position offsets from center
-        private Vector2[] _normals;                 // outward normals per perimeter node
-
+        private Vector2[] _restOffsets;
         private GameObject _nodesParent;
 
         // ─────────────────────────────────────────────────────────────────────
@@ -78,80 +83,48 @@ namespace Hideout.Slime
         {
             UpdatePerimeterPositions();
             ApplyPressure();
+            ApplyShapeMatching();
         }
 
         // ── Construction ─────────────────────────────────────────────────────
 
         private void BuildBody()
         {
-            // Pre-allocate arrays
             PerimeterPositions = new Vector2[nodeCount];
             _perimeterBodies   = new Rigidbody2D[nodeCount];
             _centerSprings     = new SpringJoint2D[nodeCount];
             _neighborSprings   = new SpringJoint2D[nodeCount];
             _restOffsets       = new Vector2[nodeCount];
-            _normals           = new Vector2[nodeCount];
 
-            // Parent for all generated nodes (keeps Hierarchy clean)
             _nodesParent = new GameObject("SlimeNodes");
             _nodesParent.transform.SetParent(transform);
             _nodesParent.transform.localPosition = Vector3.zero;
 
-            // Center node
-            _centerBody = CreateNode("Center", Vector2.zero, centerMass, 0f, true);
+            _centerBody = CreateNode("Center", Vector2.zero, centerMass, 0f);
 
-            // Perimeter nodes
             float angleStep = 360f / nodeCount;
             for (int i = 0; i < nodeCount; i++)
             {
                 float angle = i * angleStep * Mathf.Deg2Rad;
                 Vector2 offset = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * bodyRadius;
                 _restOffsets[i] = offset;
-
-                _perimeterBodies[i] = CreateNode(
-                    $"Node_{i}",
-                    offset,
-                    perimeterMass,
-                    colliderRadius,
-                    false
-                );
+                _perimeterBodies[i] = CreateNode($"Node_{i}", offset, perimeterMass, colliderRadius);
             }
 
-            // Springs: each perimeter node → center
             for (int i = 0; i < nodeCount; i++)
-            {
-                _centerSprings[i] = AddSpring(
-                    _perimeterBodies[i].gameObject,
-                    _centerBody,
-                    bodyRadius
-                );
-            }
+                _centerSprings[i] = AddSpring(_perimeterBodies[i].gameObject, _centerBody, bodyRadius);
 
-            // Springs: each perimeter node → next neighbor
             for (int i = 0; i < nodeCount; i++)
             {
                 int next = (i + 1) % nodeCount;
-                float neighborDist = Vector2.Distance(
-                    _restOffsets[i],
-                    _restOffsets[next]
-                );
-                _neighborSprings[i] = AddSpring(
-                    _perimeterBodies[i].gameObject,
-                    _perimeterBodies[next],
-                    neighborDist
-                );
+                float neighborDist = Vector2.Distance(_restOffsets[i], _restOffsets[next]);
+                _neighborSprings[i] = AddSpring(_perimeterBodies[i].gameObject, _perimeterBodies[next], neighborDist);
             }
 
-            // Compute target area via shoelace
             _targetArea = ComputeRestArea();
         }
 
-        private Rigidbody2D CreateNode(
-            string nodeName,
-            Vector2 localOffset,
-            float mass,
-            float circleRadius,
-            bool isCenter)
+        private Rigidbody2D CreateNode(string nodeName, Vector2 localOffset, float mass, float circleRadius)
         {
             var go = new GameObject(nodeName);
             go.transform.SetParent(_nodesParent.transform);
@@ -175,10 +148,7 @@ namespace Hideout.Slime
             return rb;
         }
 
-        private SpringJoint2D AddSpring(
-            GameObject from,
-            Rigidbody2D to,
-            float restLength)
+        private SpringJoint2D AddSpring(GameObject from, Rigidbody2D to, float restLength)
         {
             var spring = from.AddComponent<SpringJoint2D>();
             spring.connectedBody = to;
@@ -205,26 +175,29 @@ namespace Hideout.Slime
             if (deficit <= 0f) return;
 
             float forceMag = deficit * pressureForce;
+            Vector2 currentCenter = _centerBody.position;
 
-            // Outward normals: average of adjacent edge normals
             for (int i = 0; i < nodeCount; i++)
             {
-                int prev = (i - 1 + nodeCount) % nodeCount;
-                int next = (i + 1) % nodeCount;
-
-                Vector2 edgePrev = PerimeterPositions[i] - PerimeterPositions[prev];
-                Vector2 edgeNext = PerimeterPositions[next] - PerimeterPositions[i];
-
-                // Perpendicular (outward) to each edge
-                Vector2 nPrev = new Vector2(-edgePrev.y, edgePrev.x).normalized;
-                Vector2 nNext = new Vector2(-edgeNext.y, edgeNext.x).normalized;
-
-                _normals[i] = ((nPrev + nNext) * 0.5f).normalized;
-                _perimeterBodies[i].AddForce(_normals[i] * forceMag);
+                Vector2 outward = (_perimeterBodies[i].position - currentCenter).normalized;
+                _perimeterBodies[i].AddForce(outward * forceMag);
             }
         }
 
-        // ── Geometry helpers ──────────────────────────────────────────────────
+        private void ApplyShapeMatching()
+        {
+            Vector2 currentCenter = _centerBody.position;
+
+            for (int i = 0; i < nodeCount; i++)
+            {
+                Vector2 targetWorld = currentCenter + _restOffsets[i];
+                Vector2 currentPos  = _perimeterBodies[i].position;
+                Vector2 delta       = targetWorld - currentPos;
+                _perimeterBodies[i].AddForce(delta * shapeMatchStrength);
+            }
+        }
+
+        // ── Geometry ──────────────────────────────────────────────────────────
 
         private float ComputeRestArea()
         {
@@ -253,16 +226,12 @@ namespace Hideout.Slime
         // ── Public API ────────────────────────────────────────────────────────
 
         /// <summary>Apply a movement force to the center node.</summary>
-        public void AddMovementForce(Vector2 force)
-        {
+        public void AddMovementForce(Vector2 force) =>
             _centerBody?.AddForce(force, ForceMode2D.Force);
-        }
 
         /// <summary>Apply an impulse to the center node (e.g. jump).</summary>
-        public void AddImpulse(Vector2 impulse)
-        {
+        public void AddImpulse(Vector2 impulse) =>
             _centerBody?.AddForce(impulse, ForceMode2D.Impulse);
-        }
 
         /// <summary>Current velocity of the center node.</summary>
         public Vector2 Velocity => _centerBody != null
@@ -273,32 +242,26 @@ namespace Hideout.Slime
 
         private void OnDrawGizmos()
         {
-            if (!showGizmos) return;
+            if (!showGizmos || Application.isPlaying) return;
 
-            // Draw rest-position preview when not playing
-            if (!Application.isPlaying)
+            Gizmos.color = Color.green;
+            float angleStep = 360f / nodeCount;
+            Vector3[] pts = new Vector3[nodeCount];
+
+            for (int i = 0; i < nodeCount; i++)
             {
-                Gizmos.color = Color.green;
-                float angleStep = 360f / nodeCount;
-                Vector3[] pts = new Vector3[nodeCount];
-
-                for (int i = 0; i < nodeCount; i++)
-                {
-                    float angle = i * angleStep * Mathf.Deg2Rad;
-                    pts[i] = transform.position +
-                              new Vector3(Mathf.Cos(angle), Mathf.Sin(angle)) * bodyRadius;
-                    Gizmos.DrawWireSphere(pts[i], colliderRadius);
-                    Gizmos.DrawLine(transform.position, pts[i]);
-                }
-
-                // Perimeter ring
-                for (int i = 0; i < nodeCount; i++)
-                    Gizmos.DrawLine(pts[i], pts[(i + 1) % nodeCount]);
-
-                // Center
-                Gizmos.color = Color.yellow;
-                Gizmos.DrawWireSphere(transform.position, 0.05f);
+                float angle = i * angleStep * Mathf.Deg2Rad;
+                pts[i] = transform.position +
+                         new Vector3(Mathf.Cos(angle), Mathf.Sin(angle)) * bodyRadius;
+                Gizmos.DrawWireSphere(pts[i], colliderRadius);
+                Gizmos.DrawLine(transform.position, pts[i]);
             }
+
+            for (int i = 0; i < nodeCount; i++)
+                Gizmos.DrawLine(pts[i], pts[(i + 1) % nodeCount]);
+
+            Gizmos.color = Color.yellow;
+            Gizmos.DrawWireSphere(transform.position, 0.05f);
         }
 
         private void OnDestroy()
@@ -308,4 +271,3 @@ namespace Hideout.Slime
         }
     }
 }
-
