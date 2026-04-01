@@ -1,4 +1,3 @@
-cat > "/home/nihil/1BIT/Assets/Hideout/Scripts/Slime/SlimeBody.cs" << 'EOF'
 using UnityEngine;
 
 namespace Hideout.Slime
@@ -108,7 +107,7 @@ namespace Hideout.Slime
                 float angle = i * angleStep * Mathf.Deg2Rad;
                 Vector2 offset = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * bodyRadius;
                 _restOffsets[i] = offset;
-                _perimeterBodies[i] = CreateNode($"Node_{i}", offset, perimeterMass, colliderRadius);
+                _perimeterBodies[i] = CreateNode("Node_" + i, offset, perimeterMass, colliderRadius);
             }
 
             for (int i = 0; i < nodeCount; i++)
