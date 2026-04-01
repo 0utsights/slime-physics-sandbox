@@ -102,35 +102,30 @@ namespace Hideout.Slime.Editor
                 DrawProp("colliderRadius", "Collider Radius");
             });
 
-            // Spring Settings
-            DrawSection("Spring Settings", () =>
+            // Springs
+            DrawSection("Springs", () =>
             {
-                DrawProp("springFrequency", "Frequency");
-                DrawProp("springDamping",   "Damping Ratio");
-
-                EditorGUILayout.Space(2);
-                float freq = slime.springFrequency;
-                float damp = slime.springDamping;
-                string feel = freq < 6 ? "Very soft" :
-                              freq < 10 ? "Soft jelly" :
-                              freq < 14 ? "Firm jelly ✓" :
-                                          "Very stiff";
-                EditorGUILayout.HelpBox($"Feel: {feel}  |  Bounces: ~{Mathf.RoundToInt(1f / (damp + 0.01f))}",
-                    MessageType.None);
+                DrawProp("radialFrequency",   "Radial Frequency");
+                DrawProp("neighborFrequency", "Neighbor Frequency");
+                DrawProp("springDamping",     "Damping Ratio");
             });
 
-            // Mass
-            DrawSection("Mass", () =>
+            // Dynamic Rest Lengths
+            DrawSection("Dynamic Rest Lengths", () =>
+            {
+                DrawProp("spreadRate",          "Spread Rate");
+                DrawProp("recoveryRate",        "Recovery Rate");
+                DrawProp("maxSpreadMultiplier", "Max Spread Multiplier");
+            });
+
+            // Mass & Damping
+            DrawSection("Mass & Damping", () =>
             {
                 DrawProp("centerMass",     "Center Mass");
                 DrawProp("perimeterMass",  "Perimeter Mass");
                 DrawProp("gravityScale",   "Gravity Scale");
-            });
-
-            // Volume Preservation
-            DrawSection("Volume Preservation", () =>
-            {
-                DrawProp("pressureForce", "Pressure Force");
+                DrawProp("linearDamping",  "Linear Damping");
+                DrawProp("centerDamping",  "Center Damping");
             });
 
             // Debug

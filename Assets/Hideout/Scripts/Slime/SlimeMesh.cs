@@ -127,6 +127,11 @@ namespace Hideout.Slime
                     float t = s / (float)smoothSteps;
                     Vector2 pt = CatmullRom(p0, p1, p2, p3, t);
 
+                    Vector2 centerWorld = _body.CenterPosition;
+                    float maxDist = _body.bodyRadius * 2f;
+                    if ((pt - centerWorld).sqrMagnitude > maxDist * maxDist)
+                        pt = centerWorld + (pt - centerWorld).normalized * maxDist;
+
                     int vi = 1 + i * smoothSteps + s;
                     _vertices[vi] = transform.InverseTransformPoint(pt);
 
