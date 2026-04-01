@@ -15,10 +15,10 @@ namespace Hideout.Slime.Editor
         private void OnSceneGUI()
         {
             SlimeBody slime = (SlimeBody)target;
-            Vector3 center  = slime.transform.position;
-            int n           = slime.nodeCount;
-            float angleStep = 360f / n;
-            Vector3[] pts   = new Vector3[n];
+            Vector3   center     = slime.transform.position;
+            int       n          = slime.nodeCount;
+            float     angleStep  = 360f / n;
+            Vector3[] pts        = new Vector3[n];
 
             for (int i = 0; i < n; i++)
             {
@@ -39,7 +39,9 @@ namespace Hideout.Slime.Editor
             for (int i = 0; i < n; i++)
             {
                 Handles.DrawWireDisc(pts[i], Vector3.forward, slime.colliderRadius);
-                Handles.Label(pts[i] + Vector3.up * (slime.colliderRadius + 0.05f), i.ToString(),
+                Handles.Label(
+                    pts[i] + Vector3.up * (slime.colliderRadius + 0.05f),
+                    i.ToString(),
                     new GUIStyle { normal = { textColor = NodeColor }, fontSize = 9 });
             }
 
@@ -69,17 +71,21 @@ namespace Hideout.Slime.Editor
             DrawSection("Springs", () => {
                 DrawProp("radialFrequency",   "Radial Frequency");
                 DrawProp("neighborFrequency", "Neighbor Frequency");
-                DrawProp("springDamping",     "Damping Ratio");
+                DrawProp("springDamping",     "Spring Damping");
+            });
+
+            DrawSection("Elasticity", () => {
+                DrawProp("bounciness", "Bounciness");
             });
 
             DrawSection("Shape Matching", () => {
                 DrawProp("shapeMatchStrength", "Shape Match Strength");
             });
 
-            DrawSection("Dynamic Rest Lengths", () => {
-                DrawProp("spreadRate",           "Spread Rate");
-                DrawProp("recoveryRate",         "Recovery Rate");
-                DrawProp("maxSpreadMultiplier",  "Max Spread Multiplier");
+            DrawSection("Spread", () => {
+                DrawProp("spreadRate",          "Spread Rate");
+                DrawProp("recoveryRate",        "Recovery Rate");
+                DrawProp("maxSpreadMultiplier", "Max Spread Multiplier");
             });
 
             DrawSection("Mass", () => {
@@ -99,12 +105,7 @@ namespace Hideout.Slime.Editor
             DrawSection("Damping — Grounded", () => {
                 DrawProp("groundedDamping",       "Perimeter Damping");
                 DrawProp("groundedCenterDamping", "Center Damping");
-            });
-
-            DrawSection("Impact Recovery", () => {
-                DrawProp("maxDeformationRatio", "Max Deformation Ratio");
-                DrawProp("recoveryStrength",    "Recovery Strength");
-                DrawProp("recoveryDecay",       "Recovery Decay");
+                DrawProp("dampingTransitionSpeed", "Transition Speed");
             });
 
             DrawSection("Angular Separation", () => {
