@@ -95,6 +95,14 @@ namespace Hideout.Slime
         [Tooltip("Force pushing nodes apart when gap falls below minimum.")]
         public float separationForce = 5f;
 
+        [Header("Jump Recovery")]
+        [Tooltip("Seconds after jump before rest lengths start snapping back to original.")]
+        public float jumpRecoveryDelay    = 0.05f;
+        [Tooltip("Duration of the rest length snap-back window.")]
+        public float jumpRecoveryDuration = 0.3f;
+        [Tooltip("Rate at which rest lengths return to original during jump recovery. Higher = snappier.")]
+        public float jumpRecoveryRate     = 8f;
+
         [Header("Safety")]
         [Tooltip("Max speed any perimeter node can reach. Clamps velocity to prevent cascade decomposition.")]
         public float maxNodeSpeed = 20f;
@@ -137,6 +145,13 @@ namespace Hideout.Slime
         private float _perimeterDamping;
         private float _centerDamping;
 
+        // Jump recovery state
+        // On jump: wait _jumpRecoveryDelay seconds, then snap rest lengths back to
+        // original over _jumpRecoveryDuration seconds. Cancels if upward velocity
+        // drops to near-zero (ceiling hit or apex reached before window closes).
+        private float _jumpRecoveryTimer    = 0f;  // counts up from jump moment
+        private bool  _jumpRecoveryActive   = false;
+
         private PhysicsMaterial2D _physicsMaterial;
         private GameObject        _nodesParent;
 
@@ -174,7 +189,8 @@ namespace Hideout.Slime
             CacheGroundedRatio();
 
             ApplyPressure();
-            UpdateSpread();
+            UpdateSpread();           // spread runs first; recovery overrides rest lengths below
+            UpdateJumpRecovery();     // drives rest lengths back to original during jump window
             ApplyShapeMatching();
             EnforceAngularSeparation();
             UpdateDamping();
@@ -474,6 +490,55 @@ namespace Hideout.Slime
             }
         }
 
+        // ── JUMP RECOVERY ─────────────────────────────────────────────────────
+        // After a jump, once the delay has passed, aggressively drives all spring
+        // rest lengths back to their original values over the recovery window.
+        // This makes the slime "unfurl" gradually as it rises rather than staying
+        // compressed from the landing.
+        //
+        // Cancels immediately if upward velocity drops near zero — this means the
+        // slime has hit a ceiling or is past its apex. Cancelling prevents the
+        // unfurl from fighting the compressed shape in a tight tunnel.
+
+        private void UpdateJumpRecovery()
+        {
+            if (!_jumpRecoveryActive) return;
+
+            _jumpRecoveryTimer += Time.fixedDeltaTime;
+
+            // Cancel if upward velocity is gone — ceiling hit or apex
+            if (_centerBody.linearVelocity.y < 0.5f)
+            {
+                _jumpRecoveryActive = false;
+                return;
+            }
+
+            // Wait for the initial delay before starting the snap
+            if (_jumpRecoveryTimer < jumpRecoveryDelay) return;
+
+            // Cancel once the full window has elapsed
+            if (_jumpRecoveryTimer > jumpRecoveryDelay + jumpRecoveryDuration)
+            {
+                _jumpRecoveryActive = false;
+                return;
+            }
+
+            float dt   = Time.fixedDeltaTime;
+            float rate = jumpRecoveryRate * dt;
+            int   n    = nodeCount;
+
+            // Snap radial and neighbor rest lengths back to original.
+            // Brace springs are already fixed — no action needed.
+            for (int i = 0; i < n; i++)
+            {
+                _radialSprings[i].distance =
+                    Mathf.MoveTowards(_radialSprings[i].distance, _radialRestDist[i], rate);
+
+                _neighborSprings[i].distance =
+                    Mathf.MoveTowards(_neighborSprings[i].distance, _neighborRestDist[i], rate);
+            }
+        }
+
         // ── DAMPING ───────────────────────────────────────────────────────────
         // MoveTowards-smoothed linearDamping per body type, driven by GroundedRatio.
         // Spring oscillation (from springDamping) runs its course; this transitions
@@ -522,6 +587,10 @@ namespace Hideout.Slime
             _centerBody.AddForce(impulse * centerMass, ForceMode2D.Impulse);
             for (int i = 0; i < nodeCount; i++)
                 _perimeterBodies[i].AddForce(impulse * perimeterMass, ForceMode2D.Impulse);
+
+            // Trigger the post-jump rest length recovery window
+            _jumpRecoveryActive = true;
+            _jumpRecoveryTimer  = 0f;
         }
 
         // ── Gizmos ────────────────────────────────────────────────────────────

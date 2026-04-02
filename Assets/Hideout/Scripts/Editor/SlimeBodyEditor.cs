@@ -123,6 +123,12 @@ namespace Hideout.Slime.Editor
                 DrawProp("separationForce",      "Separation Force");
             });
 
+            DrawSection("Jump Recovery", () => {
+                DrawProp("jumpRecoveryDelay",    "Delay");
+                DrawProp("jumpRecoveryDuration", "Duration");
+                DrawProp("jumpRecoveryRate",     "Rate");
+            });
+
             DrawSection("Safety", () => {
                 DrawProp("maxNodeSpeed", "Max Node Speed");
             });
