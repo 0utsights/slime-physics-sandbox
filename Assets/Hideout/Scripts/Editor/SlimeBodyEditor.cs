@@ -7,53 +7,6 @@ namespace Hideout.Slime.Editor
     [CustomEditor(typeof(SlimeBody))]
     public class SlimeBodyEditor : UnityEditor.Editor
     {
-        private static readonly Color NodeColor   = new Color(0.2f, 0.9f, 0.2f, 1f);
-        private static readonly Color RingColor   = new Color(0.2f, 0.9f, 0.2f, 0.6f);
-        private static readonly Color BraceColor  = new Color(0.2f, 0.9f, 0.2f, 0.2f);
-        private static readonly Color SpokeColor  = new Color(0.2f, 0.9f, 0.2f, 0.3f);
-        private static readonly Color CenterColor = new Color(1f, 0.9f, 0.1f, 1f);
-
-        private void OnSceneGUI()
-        {
-            SlimeBody slime     = (SlimeBody)target;
-            Vector3   center    = slime.transform.position;
-            int       n         = slime.nodeCount;
-            float     angleStep = 360f / n;
-            Vector3[] pts       = new Vector3[n];
-
-            for (int i = 0; i < n; i++)
-            {
-                float angle = i * angleStep * Mathf.Deg2Rad;
-                pts[i] = center + new Vector3(
-                    Mathf.Cos(angle), Mathf.Sin(angle)) * slime.bodyRadius;
-            }
-
-            Handles.color = SpokeColor;
-            for (int i = 0; i < n; i++)
-                Handles.DrawLine(center, pts[i]);
-
-            Handles.color = BraceColor;
-            for (int i = 0; i < n; i++)
-                Handles.DrawLine(pts[i], pts[(i + 2) % n]);
-
-            Handles.color = RingColor;
-            for (int i = 0; i < n; i++)
-                Handles.DrawLine(pts[i], pts[(i + 1) % n]);
-
-            Handles.color = NodeColor;
-            for (int i = 0; i < n; i++)
-            {
-                Handles.DrawWireDisc(pts[i], Vector3.forward, slime.colliderRadius);
-                Handles.Label(
-                    pts[i] + Vector3.up * (slime.colliderRadius + 0.05f),
-                    i.ToString(),
-                    new GUIStyle { normal = { textColor = NodeColor }, fontSize = 9 });
-            }
-
-            Handles.color = CenterColor;
-            Handles.DrawSolidDisc(center, Vector3.forward, 0.04f);
-        }
-
         public override void OnInspectorGUI()
         {
             serializedObject.Update();
@@ -102,6 +55,7 @@ namespace Hideout.Slime.Editor
             DrawSection("Crouch", () => {
                 DrawProp("crouchDownForce",                "Down Force");
                 DrawProp("crouchStiffnessMultiplier",      "Stiffness Multiplier");
+                DrawProp("crouchPressureMultiplier",       "Pressure Multiplier");
                 DrawProp("crouchReleaseGroundedThreshold", "Release Threshold");
             });
 
@@ -140,10 +94,6 @@ namespace Hideout.Slime.Editor
             DrawSection("Safety", () => {
                 DrawProp("maxNodeSpeed",     "Max Node Speed");
                 DrawProp("maxRecoveryForce", "Max Recovery Force");
-            });
-
-            DrawSection("Debug", () => {
-                DrawProp("showGizmos", "Show Gizmos");
             });
 
             serializedObject.ApplyModifiedProperties();

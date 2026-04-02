@@ -62,7 +62,7 @@ namespace Hideout.Slime
 
         [Header("Shape Recovery — Idle")]
         [Tooltip("Stiffness of recovery force when resting. Low = wobbly, high = rigid. 50–200.")]
-        public float idleRecoveryStiffness = 80f;
+        public float idleRecoveryStiffness = 150f;
         [Tooltip("Damping of recovery force when resting. Reduces oscillation. 8–20.")]
         public float idleRecoveryDamping   = 4f;
 
@@ -93,6 +93,9 @@ namespace Hideout.Slime
         [Tooltip("Grounded ratio threshold below which release-recovery is suppressed (tight crevice).")]
         [Range(0f, 1f)]
         public float crouchReleaseGroundedThreshold = 0.4f;
+        [Tooltip("How much to reduce pressure while crouching. 0 = no resistance to shape change, 1 = no change. Keep low so slime can flow into geometry.")]
+        [Range(0f, 1f)]
+        public float crouchPressureMultiplier = 0.1f;
 
         [Header("Mass")]
         public float centerMass    = 2f;
@@ -125,9 +128,6 @@ namespace Hideout.Slime
         public float maxNodeSpeed = 20f;
         [Tooltip("Max recovery force magnitude per node. Prevents explosion on extreme deformation.")]
         public float maxRecoveryForce = 500f;
-
-        [Header("Debug")]
-        public bool showGizmos = true;
 
         // ── Public ────────────────────────────────────────────────────────────
 
@@ -389,7 +389,7 @@ namespace Hideout.Slime
             if (area < 0.001f) return;
 
             float normalSign = signedArea > 0f ? 1f : -1f;
-            float pressure   = gasAmount / area * pressureStrength;
+            float pressure   = gasAmount / area * EffectivePressureStrength;
 
             for (int i = 0; i < n; i++)
             {
@@ -623,8 +623,12 @@ namespace Hideout.Slime
 
             if (crouching)
             {
-                // Continuous downward push — weaker than a jump, feels like pressing down
+                // Distribute downforce across all bodies so pressure is even and
+                // geometry can naturally funnel nodes into whatever shape the hole provides.
+                // Pure center-only force caused asymmetric crushing instead of funneling.
                 _centerBody?.AddForce(Vector2.down * crouchDownForce, ForceMode2D.Force);
+                for (int i = 0; i < nodeCount; i++)
+                    _perimeterBodies[i].AddForce(Vector2.down * crouchDownForce);
             }
             else if (wascrouching)
             {
@@ -643,35 +647,9 @@ namespace Hideout.Slime
             _isCrouching ? idleRecoveryStiffness * crouchStiffnessMultiplier
                          : idleRecoveryStiffness;
 
-        // ── Gizmos ────────────────────────────────────────────────────────────
-
-        private void OnDrawGizmos()
-        {
-            if (!showGizmos || Application.isPlaying) return;
-
-            float     angleStep = 360f / nodeCount;
-            Vector3[] pts       = new Vector3[nodeCount];
-
-            Gizmos.color = Color.green;
-            for (int i = 0; i < nodeCount; i++)
-            {
-                float angle = i * angleStep * Mathf.Deg2Rad;
-                pts[i] = transform.position +
-                         new Vector3(Mathf.Cos(angle), Mathf.Sin(angle)) * bodyRadius;
-                Gizmos.DrawWireSphere(pts[i], colliderRadius);
-                Gizmos.DrawLine(transform.position, pts[i]);
-            }
-
-            for (int i = 0; i < nodeCount; i++)
-                Gizmos.DrawLine(pts[i], pts[(i + 1) % nodeCount]);
-
-            Gizmos.color = new Color(0f, 1f, 0f, 0.25f);
-            for (int i = 0; i < nodeCount; i++)
-                Gizmos.DrawLine(pts[i], pts[(i + 2) % nodeCount]);
-
-            Gizmos.color = Color.yellow;
-            Gizmos.DrawWireSphere(transform.position, 0.05f);
-        }
+        private float EffectivePressureStrength =>
+            _isCrouching ? pressureStrength * crouchPressureMultiplier
+                         : pressureStrength;
 
         // ── Cleanup ───────────────────────────────────────────────────────────
 
