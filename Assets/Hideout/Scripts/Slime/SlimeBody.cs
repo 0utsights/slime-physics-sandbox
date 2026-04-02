@@ -64,8 +64,8 @@ namespace Hideout.Slime
         [Header("Spread")]
         [Tooltip("Rate rest lengths follow node stretch outward.")]
         public float spreadRate = 1.2f;
-        [Tooltip("Rate rest lengths return to original when nodes compress.")]
-        public float recoveryRate = 0.3f;
+        [Tooltip("Rate rest lengths return to original. Should be much higher than spreadRate so deformation doesn't persist.")]
+        public float recoveryRate = 6f;
         [Tooltip("Maximum rest length as a multiplier of original.")]
         public float maxSpreadMultiplier = 1.5f;
 
@@ -397,13 +397,21 @@ namespace Hideout.Slime
             }
         }
 
-        // ── SPREAD ────────────────────────────────────────────────────────────
-        // Radial and neighbor rest lengths follow node stretch outward (up to cap)
-        // and recover toward original when nodes compress.
-        // Brace springs have fixed rest lengths — structural role only.
+        // ── SPREAD & RECOVERY ─────────────────────────────────────────────────
+        // Rest lengths follow node stretch outward at spreadRate.
+        // Recovery back to original runs at recoveryRate, which must be higher
+        // than spreadRate so the slime doesn't permanently stay deformed.
+        //
+        // Jump recovery overrides this entirely during its window — rest lengths
+        // are snapped back at jumpRecoveryRate regardless of current node positions,
+        // so the slime unfurls even while nodes are still physically displaced.
 
         private void UpdateSpread()
         {
+            // Jump recovery takes full control — don't let spread logic fight it
+            if (_jumpRecoveryActive && _jumpRecoveryTimer >= jumpRecoveryDelay)
+                return;
+
             Vector2 center = _centerBody.position;
             float   dt     = Time.fixedDeltaTime;
             int     n      = nodeCount;
@@ -415,14 +423,18 @@ namespace Hideout.Slime
                 float origR    = _radialRestDist[i];
                 float currentR = _radialSprings[i].distance;
                 float actualR  = Vector2.Distance(_perimeterBodies[i].position, center);
-                _radialSprings[i].distance = actualR > currentR
+
+                // Follow stretch outward, recover inward — always toward original
+                // when not stretching. recoveryRate should be >> spreadRate.
+                _radialSprings[i].distance = actualR > origR
                     ? Mathf.MoveTowards(currentR, Mathf.Min(actualR, origR * maxSpreadMultiplier), spreadRate * dt)
                     : Mathf.MoveTowards(currentR, origR, recoveryRate * dt);
 
                 float origN    = _neighborRestDist[i];
                 float currentN = _neighborSprings[i].distance;
                 float actualN  = Vector2.Distance(_perimeterBodies[i].position, _perimeterBodies[next].position);
-                _neighborSprings[i].distance = actualN > currentN
+
+                _neighborSprings[i].distance = actualN > origN
                     ? Mathf.MoveTowards(currentN, Mathf.Min(actualN, origN * maxSpreadMultiplier), spreadRate * dt)
                     : Mathf.MoveTowards(currentN, origN, recoveryRate * dt);
             }
