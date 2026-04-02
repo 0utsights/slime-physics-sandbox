@@ -348,17 +348,22 @@ namespace Hideout.Slime
         {
             int n = nodeCount;
 
-            float area = 0f;
+            // Signed shoelace area: positive = CCW winding, negative = CW winding.
+            // We use the sign to determine which way to rotate the edge normal so
+            // the force always points outward regardless of node spawn order.
+            float signedArea = 0f;
             for (int i = 0; i < n; i++)
             {
                 Vector2 a = PerimeterPositions[i];
                 Vector2 b = PerimeterPositions[(i + 1) % n];
-                area += a.x * b.y - b.x * a.y;
+                signedArea += a.x * b.y - b.x * a.y;
             }
-            area = Mathf.Abs(area) * 0.5f;
+            float area = Mathf.Abs(signedArea) * 0.5f;
             if (area < 0.001f) return;
 
-            float pressure = gasAmount / area * pressureStrength;
+            // normalSign: +1 for CCW (rotate edge CW for outward), -1 for CW (rotate edge CCW)
+            float normalSign = signedArea > 0f ? 1f : -1f;
+            float pressure   = gasAmount / area * pressureStrength;
 
             for (int i = 0; i < n; i++)
             {
@@ -367,8 +372,8 @@ namespace Hideout.Slime
                 float   edgeLen = edge.magnitude;
                 if (edgeLen < 0.0001f) continue;
 
-                // Outward normal for CCW polygon: rotate edge 90° clockwise
-                Vector2 normal = new Vector2(edge.y, -edge.x) / edgeLen;
+                // Rotate edge 90° in the outward direction based on winding
+                Vector2 normal = new Vector2(edge.y * normalSign, -edge.x * normalSign) / edgeLen;
                 Vector2 force  = normal * (pressure * edgeLen * 0.5f);
 
                 _perimeterBodies[i].AddForce(force);
@@ -496,8 +501,28 @@ namespace Hideout.Slime
         public void AddMovementForce(Vector2 force) =>
             _centerBody?.AddForce(force, ForceMode2D.Force);
 
-        public void AddImpulse(Vector2 impulse) =>
-            _centerBody?.AddForce(impulse, ForceMode2D.Impulse);
+        /// <summary>
+        /// Applies an impulse to all bodies proportional to their mass share.
+        /// Distributes force across the entire system so jump feels consistent
+        /// regardless of how settled the damping is.
+        /// </summary>
+        public void AddImpulse(Vector2 impulse)
+        {
+            if (_centerBody == null) return;
+
+            // Reset grounded damping instantly on jump so it doesn't eat the impulse
+            _perimeterDamping = airborneDamping;
+            _centerDamping    = airborneCenterDamping;
+            for (int i = 0; i < nodeCount; i++)
+                _perimeterBodies[i].linearDamping = _perimeterDamping;
+            _centerBody.linearDamping = _centerDamping;
+
+            // Apply impulse to every body scaled by its mass so the whole
+            // system moves together rather than just the center stretching away
+            _centerBody.AddForce(impulse * centerMass, ForceMode2D.Impulse);
+            for (int i = 0; i < nodeCount; i++)
+                _perimeterBodies[i].AddForce(impulse * perimeterMass, ForceMode2D.Impulse);
+        }
 
         // ── Gizmos ────────────────────────────────────────────────────────────
 
@@ -538,4 +563,3 @@ namespace Hideout.Slime
         }
     }
 }
-

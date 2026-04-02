@@ -15,7 +15,7 @@ namespace Hideout.Slime
         public float moveForce = 12f;
 
         [Header("Jump")]
-        public float jumpForce      = 10f;
+        public float jumpForce      = 5f;
         public float jumpCoyoteTime = 0.1f;
 
         private SlimeBody _body;
