@@ -5,25 +5,37 @@ namespace Hideout.Slime
     /// <summary>
     /// Attached to each perimeter node.
     /// Tracks grounded state and contact normals.
-    /// Applies corner escape impulse when wedged.
-    /// Exposes IsGrounded to SlimeBody for damping switching.
+    /// Clamps velocity on first collision contact to prevent energy spike decomposition.
+    /// Applies corner escape impulse when wedged between two surfaces.
     /// </summary>
     public class SlimeNodeContact : MonoBehaviour
     {
-        public bool IsGrounded { get; private set; }
-        public Vector2 ContactNormal { get; private set; }
+        public bool    IsGrounded     { get; private set; }
+        public Vector2 ContactNormal  { get; private set; }
 
-        private SlimeBody _body;
-        private Rigidbody2D _rb;
-        private float _escapeForce;
+        private SlimeBody    _body;
+        private Rigidbody2D  _rb;
+        private float        _escapeForce;
+        private float        _maxImpactSpeed;
 
         private static readonly ContactPoint2D[] _contacts = new ContactPoint2D[4];
 
-        public void Init(SlimeBody body, float escapeForce)
+        public void Init(SlimeBody body, float escapeForce, float maxImpactSpeed)
         {
-            _body = body;
-            _escapeForce = escapeForce;
-            _rb = GetComponent<Rigidbody2D>();
+            _body           = body;
+            _escapeForce    = escapeForce;
+            _maxImpactSpeed = maxImpactSpeed;
+            _rb             = GetComponent<Rigidbody2D>();
+        }
+
+        private void OnCollisionEnter2D(Collision2D collision)
+        {
+            // Clamp the velocity spike on the first contact frame.
+            // Without this, a hard impact injects a large velocity into the spring
+            // network in a single step, overwhelming spring restoration and causing
+            // decomposition before damping can respond.
+            if (_rb.linearVelocity.sqrMagnitude > _maxImpactSpeed * _maxImpactSpeed)
+                _rb.linearVelocity = _rb.linearVelocity.normalized * _maxImpactSpeed;
         }
 
         private void OnCollisionStay2D(Collision2D collision)
@@ -34,7 +46,7 @@ namespace Hideout.Slime
             if (count >= 1)
                 ContactNormal = _contacts[0].normal;
 
-            // Corner escape: two diverging normals = wedged
+            // Corner escape: two diverging normals means the node is wedged
             if (count >= 2)
             {
                 Vector2 n0 = _contacts[0].normal;
@@ -43,15 +55,14 @@ namespace Hideout.Slime
                 {
                     Vector2 escape   = (n0 + n1).normalized;
                     Vector2 toCenter = (_body.CenterPosition - (Vector2)transform.position).normalized;
-                    Vector2 dir      = (escape + toCenter * 0.5f).normalized;
-                    _rb.AddForce(dir * _escapeForce, ForceMode2D.Impulse);
+                    _rb.AddForce((escape + toCenter * 0.5f).normalized * _escapeForce, ForceMode2D.Impulse);
                 }
             }
         }
 
         private void OnCollisionExit2D(Collision2D collision)
         {
-            IsGrounded = false;
+            IsGrounded    = false;
             ContactNormal = Vector2.zero;
         }
     }

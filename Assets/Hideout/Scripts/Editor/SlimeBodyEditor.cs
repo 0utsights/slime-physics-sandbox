@@ -9,16 +9,17 @@ namespace Hideout.Slime.Editor
     {
         private static readonly Color NodeColor   = new Color(0.2f, 0.9f, 0.2f, 1f);
         private static readonly Color RingColor   = new Color(0.2f, 0.9f, 0.2f, 0.6f);
+        private static readonly Color BraceColor  = new Color(0.2f, 0.9f, 0.2f, 0.2f);
         private static readonly Color SpokeColor  = new Color(0.2f, 0.9f, 0.2f, 0.3f);
         private static readonly Color CenterColor = new Color(1f, 0.9f, 0.1f, 1f);
 
         private void OnSceneGUI()
         {
-            SlimeBody slime = (SlimeBody)target;
-            Vector3   center     = slime.transform.position;
-            int       n          = slime.nodeCount;
-            float     angleStep  = 360f / n;
-            Vector3[] pts        = new Vector3[n];
+            SlimeBody slime     = (SlimeBody)target;
+            Vector3   center    = slime.transform.position;
+            int       n         = slime.nodeCount;
+            float     angleStep = 360f / n;
+            Vector3[] pts       = new Vector3[n];
 
             for (int i = 0; i < n; i++)
             {
@@ -30,6 +31,10 @@ namespace Hideout.Slime.Editor
             Handles.color = SpokeColor;
             for (int i = 0; i < n; i++)
                 Handles.DrawLine(center, pts[i]);
+
+            Handles.color = BraceColor;
+            for (int i = 0; i < n; i++)
+                Handles.DrawLine(pts[i], pts[(i + 2) % n]);
 
             Handles.color = RingColor;
             for (int i = 0; i < n; i++)
@@ -53,7 +58,7 @@ namespace Hideout.Slime.Editor
         {
             serializedObject.Update();
 
-            GUIStyle header = new GUIStyle(EditorStyles.boldLabel)
+            var header = new GUIStyle(EditorStyles.boldLabel)
             {
                 fontSize = 12,
                 normal   = { textColor = new Color(0.4f, 0.9f, 0.4f) }
@@ -70,12 +75,17 @@ namespace Hideout.Slime.Editor
 
             DrawSection("Springs", () => {
                 DrawProp("radialFrequency",   "Radial Frequency");
-                DrawProp("neighborFrequency", "Neighbor Frequency");
+                DrawProp("neighborFrequency", "Neighbor / Brace Frequency");
                 DrawProp("springDamping",     "Spring Damping");
             });
 
             DrawSection("Elasticity", () => {
                 DrawProp("bounciness", "Bounciness");
+            });
+
+            DrawSection("Pressure", () => {
+                DrawProp("gasAmount",       "Gas Amount");
+                DrawProp("pressureStrength","Pressure Strength");
             });
 
             DrawSection("Shape Matching", () => {
@@ -103,14 +113,18 @@ namespace Hideout.Slime.Editor
             });
 
             DrawSection("Damping — Grounded", () => {
-                DrawProp("groundedDamping",       "Perimeter Damping");
-                DrawProp("groundedCenterDamping", "Center Damping");
+                DrawProp("groundedDamping",        "Perimeter Damping");
+                DrawProp("groundedCenterDamping",  "Center Damping");
                 DrawProp("dampingTransitionSpeed", "Transition Speed");
             });
 
             DrawSection("Angular Separation", () => {
                 DrawProp("minAngularSeparation", "Min Angular Separation");
                 DrawProp("separationForce",      "Separation Force");
+            });
+
+            DrawSection("Safety", () => {
+                DrawProp("maxNodeSpeed", "Max Node Speed");
             });
 
             DrawSection("Debug", () => {
