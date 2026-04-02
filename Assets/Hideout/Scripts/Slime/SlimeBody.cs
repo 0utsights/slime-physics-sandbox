@@ -149,6 +149,15 @@ namespace Hideout.Slime
             Physics2D.velocityIterations = 12;
             Physics2D.positionIterations = 6;
 
+            // Slime nodes must not collide with each other — they push each other
+            // into terrain and prevent jumping. Ignore intra-layer collisions.
+            // Requires a "Slime" layer to exist in Project Settings → Tags and Layers.
+            int slimeLayer = LayerMask.NameToLayer("Slime");
+            if (slimeLayer != -1)
+                Physics2D.IgnoreLayerCollision(slimeLayer, slimeLayer, true);
+            else
+                Debug.LogWarning("[SlimeBody] No 'Slime' layer found. Add it in Project Settings → Tags and Layers. Nodes will collide with each other.");
+
             BuildPhysicsMaterial();
             BuildBody();
 
@@ -199,7 +208,7 @@ namespace Hideout.Slime
             _nodesParent.transform.SetParent(transform);
             _nodesParent.transform.localPosition = Vector3.zero;
 
-            _centerBody = CreateNode("Center", Vector2.zero, centerMass, airborneCenterDamping);
+            _centerBody = CreateNode("Center", Vector2.zero, centerMass, airborneCenterDamping, hasCollider: false);
 
             float angleStep = 360f / n;
             for (int i = 0; i < n; i++)
@@ -234,12 +243,16 @@ namespace Hideout.Slime
             }
         }
 
-        private Rigidbody2D CreateNode(string nodeName, Vector2 localOffset, float mass, float damping)
+        private Rigidbody2D CreateNode(string nodeName, Vector2 localOffset, float mass, float damping, bool hasCollider = true)
         {
             var go = new GameObject(nodeName);
             go.transform.SetParent(_nodesParent.transform);
             go.transform.localPosition = localOffset;
-            go.layer = gameObject.layer;
+
+            // Slime nodes go on the Slime layer so they ignore each other via
+            // Physics2D.IgnoreLayerCollision set in Awake. Falls back to parent layer.
+            int slimeLayer = LayerMask.NameToLayer("Slime");
+            go.layer = slimeLayer != -1 ? slimeLayer : gameObject.layer;
 
             var rb = go.AddComponent<Rigidbody2D>();
             rb.mass                   = mass;
@@ -251,9 +264,14 @@ namespace Hideout.Slime
             rb.sleepMode              = RigidbodySleepMode2D.NeverSleep;
             rb.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
 
-            var col           = go.AddComponent<CircleCollider2D>();
-            col.radius         = colliderRadius;
-            col.sharedMaterial = _physicsMaterial;
+            // Center node has no collider — it is interior and must never touch terrain.
+            // Only perimeter nodes form the physical boundary.
+            if (hasCollider)
+            {
+                var col           = go.AddComponent<CircleCollider2D>();
+                col.radius         = colliderRadius;
+                col.sharedMaterial = _physicsMaterial;
+            }
 
             return rb;
         }
@@ -520,3 +538,4 @@ namespace Hideout.Slime
         }
     }
 }
+
