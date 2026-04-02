@@ -84,18 +84,26 @@ namespace Hideout.Slime.Editor
             });
 
             DrawSection("Pressure", () => {
-                DrawProp("gasAmount",       "Gas Amount");
-                DrawProp("pressureStrength","Pressure Strength");
+                DrawProp("gasAmount",        "Gas Amount");
+                DrawProp("pressureStrength", "Pressure Strength");
             });
 
-            DrawSection("Shape Matching", () => {
-                DrawProp("shapeMatchStrength", "Shape Match Strength");
+            DrawSection("Shape Recovery — Idle", () => {
+                DrawProp("idleRecoveryStiffness", "Stiffness");
+                DrawProp("idleRecoveryDamping",   "Damping");
             });
 
-            DrawSection("Spread", () => {
-                DrawProp("spreadRate",          "Spread Rate");
-                DrawProp("recoveryRate",        "Recovery Rate");
-                DrawProp("maxSpreadMultiplier", "Max Spread Multiplier");
+            DrawSection("Shape Recovery — Impact", () => {
+                DrawProp("impactRecoveryStiffness", "Stiffness");
+                DrawProp("impactRecoveryDamping",   "Damping");
+                DrawProp("impactRecoveryDuration",  "Duration");
+            });
+
+            DrawSection("Shape Recovery — Jump", () => {
+                DrawProp("jumpRecoveryStiffness", "Stiffness");
+                DrawProp("jumpRecoveryDamping",   "Damping");
+                DrawProp("jumpRecoveryDelay",     "Delay");
+                DrawProp("jumpRecoveryDuration",  "Duration");
             });
 
             DrawSection("Mass", () => {
@@ -123,14 +131,9 @@ namespace Hideout.Slime.Editor
                 DrawProp("separationForce",      "Separation Force");
             });
 
-            DrawSection("Jump Recovery", () => {
-                DrawProp("jumpRecoveryDelay",    "Delay");
-                DrawProp("jumpRecoveryDuration", "Duration");
-                DrawProp("jumpRecoveryRate",     "Rate");
-            });
-
             DrawSection("Safety", () => {
-                DrawProp("maxNodeSpeed", "Max Node Speed");
+                DrawProp("maxNodeSpeed",     "Max Node Speed");
+                DrawProp("maxRecoveryForce", "Max Recovery Force");
             });
 
             DrawSection("Debug", () => {

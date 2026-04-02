@@ -5,18 +5,19 @@ namespace Hideout.Slime
     /// <summary>
     /// Attached to each perimeter node.
     /// Tracks grounded state and contact normals.
-    /// Clamps velocity on first collision contact to prevent energy spike decomposition.
+    /// Notifies SlimeBody on first contact so impact recovery can trigger.
+    /// Clamps velocity on collision enter to prevent energy spike decomposition.
     /// Applies corner escape impulse when wedged between two surfaces.
     /// </summary>
     public class SlimeNodeContact : MonoBehaviour
     {
-        public bool    IsGrounded     { get; private set; }
-        public Vector2 ContactNormal  { get; private set; }
+        public bool    IsGrounded    { get; private set; }
+        public Vector2 ContactNormal { get; private set; }
 
-        private SlimeBody    _body;
-        private Rigidbody2D  _rb;
-        private float        _escapeForce;
-        private float        _maxImpactSpeed;
+        private SlimeBody   _body;
+        private Rigidbody2D _rb;
+        private float       _escapeForce;
+        private float       _maxImpactSpeed;
 
         private static readonly ContactPoint2D[] _contacts = new ContactPoint2D[4];
 
@@ -30,12 +31,12 @@ namespace Hideout.Slime
 
         private void OnCollisionEnter2D(Collision2D collision)
         {
-            // Clamp the velocity spike on the first contact frame.
-            // Without this, a hard impact injects a large velocity into the spring
-            // network in a single step, overwhelming spring restoration and causing
-            // decomposition before damping can respond.
+            // Clamp velocity spike on first contact before it propagates through springs
             if (_rb.linearVelocity.sqrMagnitude > _maxImpactSpeed * _maxImpactSpeed)
                 _rb.linearVelocity = _rb.linearVelocity.normalized * _maxImpactSpeed;
+
+            // Notify SlimeBody to trigger the impact recovery burst
+            _body.NotifyImpact();
         }
 
         private void OnCollisionStay2D(Collision2D collision)
@@ -46,7 +47,7 @@ namespace Hideout.Slime
             if (count >= 1)
                 ContactNormal = _contacts[0].normal;
 
-            // Corner escape: two diverging normals means the node is wedged
+            // Corner escape: two diverging normals = wedged
             if (count >= 2)
             {
                 Vector2 n0 = _contacts[0].normal;
