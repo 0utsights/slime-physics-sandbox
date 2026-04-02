@@ -57,6 +57,9 @@ namespace Hideout.Slime
             }
 
             _jumpBuffered = false;
+
+            // Crouch: down arrow. SetCrouching handles force + stiffness each frame.
+            _body.SetCrouching(kb.downArrowKey.isPressed);
         }
     }
 }

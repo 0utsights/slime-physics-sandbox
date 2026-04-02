@@ -84,6 +84,16 @@ namespace Hideout.Slime
         [Tooltip("Duration of the unfurl window.")]
         public float jumpRecoveryDuration  = 0.3f;
 
+        [Header("Crouch")]
+        [Tooltip("Continuous downward force applied while crouching. Weaker than a jump.")]
+        public float crouchDownForce = 6f;
+        [Tooltip("How much to reduce idle recovery stiffness while crouching. 0 = fully limp, 1 = no change.")]
+        [Range(0f, 1f)]
+        public float crouchStiffnessMultiplier = 0.05f;
+        [Tooltip("Grounded ratio threshold below which release-recovery is suppressed (tight crevice).")]
+        [Range(0f, 1f)]
+        public float crouchReleaseGroundedThreshold = 0.4f;
+
         [Header("Mass")]
         public float centerMass    = 2f;
         public float perimeterMass = 0.5f;
@@ -156,6 +166,7 @@ namespace Hideout.Slime
         private float _centerDamping;
 
         // Recovery state
+        private bool  _isCrouching         = false;
         private float _impactRecoveryTimer = 0f;  // counts down from impactRecoveryDuration
         private float _jumpTimer           = 0f;  // counts up from jump moment
         private bool  _jumpActive          = false;
@@ -433,7 +444,7 @@ namespace Hideout.Slime
                     _jumpActive = false;
 
                 bool inWindow = _jumpActive && _jumpTimer >= jumpRecoveryDelay;
-                stiffness = inWindow ? jumpRecoveryStiffness : idleRecoveryStiffness;
+                stiffness = inWindow ? jumpRecoveryStiffness : EffectiveIdleStiffness;
                 damping   = inWindow ? jumpRecoveryDamping   : idleRecoveryDamping;
             }
             // Impact burst: fades linearly over impactRecoveryDuration
@@ -441,13 +452,13 @@ namespace Hideout.Slime
             {
                 _impactRecoveryTimer -= dt;
                 float t = _impactRecoveryTimer / impactRecoveryDuration; // 1→0
-                stiffness = Mathf.Lerp(idleRecoveryStiffness,   impactRecoveryStiffness, t);
+                stiffness = Mathf.Lerp(EffectiveIdleStiffness,  impactRecoveryStiffness, t);
                 damping   = Mathf.Lerp(idleRecoveryDamping,     impactRecoveryDamping,   t);
             }
             // Idle: constant baseline recovery
             else
             {
-                stiffness = idleRecoveryStiffness;
+                stiffness = EffectiveIdleStiffness;
                 damping   = idleRecoveryDamping;
             }
 
@@ -597,6 +608,40 @@ namespace Hideout.Slime
             _impactRecoveryTimer = impactRecoveryDuration;
             _jumpActive = false; // landing cancels jump unfurl
         }
+
+        /// <summary>
+        /// Called by SlimeController each frame with the current crouch state.
+        /// While crouching: applies downward force and reduces recovery stiffness so
+        /// the slime can deform into crevices without bouncing back out.
+        /// On release: triggers immediate recovery unless too many nodes are still
+        /// in contact (tight crevice — recovery would fight the geometry).
+        /// </summary>
+        public void SetCrouching(bool crouching)
+        {
+            bool wascrouching = _isCrouching;
+            _isCrouching = crouching;
+
+            if (crouching)
+            {
+                // Continuous downward push — weaker than a jump, feels like pressing down
+                _centerBody?.AddForce(Vector2.down * crouchDownForce, ForceMode2D.Force);
+            }
+            else if (wascrouching)
+            {
+                // Released crouch — recover immediately unless we're still wedged
+                // in a crevice (most nodes still grounded = no room to expand)
+                if (GroundedRatio < crouchReleaseGroundedThreshold)
+                    NotifyImpact(); // reuse impact burst: fast stiffness recovery
+            }
+        }
+
+        /// <summary>
+        /// Returns the effective idle recovery stiffness for this frame.
+        /// Crouching multiplies it down so shape matching stops resisting compression.
+        /// </summary>
+        private float EffectiveIdleStiffness =>
+            _isCrouching ? idleRecoveryStiffness * crouchStiffnessMultiplier
+                         : idleRecoveryStiffness;
 
         // ── Gizmos ────────────────────────────────────────────────────────────
 

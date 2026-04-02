@@ -99,6 +99,12 @@ namespace Hideout.Slime.Editor
                 DrawProp("impactRecoveryDuration",  "Duration");
             });
 
+            DrawSection("Crouch", () => {
+                DrawProp("crouchDownForce",                "Down Force");
+                DrawProp("crouchStiffnessMultiplier",      "Stiffness Multiplier");
+                DrawProp("crouchReleaseGroundedThreshold", "Release Threshold");
+            });
+
             DrawSection("Shape Recovery — Jump", () => {
                 DrawProp("jumpRecoveryStiffness", "Stiffness");
                 DrawProp("jumpRecoveryDamping",   "Damping");
