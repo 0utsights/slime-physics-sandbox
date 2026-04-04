@@ -20,89 +20,89 @@ namespace Hideout.Slime.Editor
             EditorGUILayout.LabelField("Slime Body", header);
             EditorGUILayout.Space(2);
 
-            DrawSection("Body Shape", () => {
-                DrawProp("nodeCount",      "Node Count");
-                DrawProp("bodyRadius",     "Body Radius");
-                DrawProp("colliderRadius", "Collider Radius");
+            Section("Body Shape", () => {
+                Prop("nodeCount",      "Node Count");
+                Prop("bodyRadius",     "Body Radius");
+                Prop("colliderRadius", "Collider Radius");
             });
 
-            DrawSection("Springs", () => {
-                DrawProp("radialFrequency",   "Radial Frequency");
-                DrawProp("neighborFrequency", "Neighbor / Brace Frequency");
-                DrawProp("springDamping",     "Spring Damping");
+            Section("Springs", () => {
+                Prop("radialFrequency",   "Radial Frequency");
+                Prop("neighborFrequency", "Neighbor Frequency");
+                Prop("springDamping",     "Spring Damping");
             });
 
-            DrawSection("Elasticity", () => {
-                DrawProp("bounciness", "Bounciness");
+            Section("Elasticity", () => {
+                Prop("bounciness", "Bounciness");
             });
 
-            DrawSection("Pressure", () => {
-                DrawProp("pressureStrength", "Pressure Strength");
+            Section("Pressure", () => {
+                Prop("pressureStrength", "Pressure Strength");
             });
 
-            DrawSection("Shape Recovery — Idle", () => {
-                DrawProp("idleRecoveryStiffness", "Stiffness");
-                DrawProp("idleRecoveryDamping",   "Damping");
+            Section("Shape Recovery — Idle", () => {
+                Prop("idleRecoveryStiffness", "Stiffness");
+                Prop("idleRecoveryDamping",   "Damping");
             });
 
-            DrawSection("Shape Recovery — Impact", () => {
-                DrawProp("impactRecoveryStiffness", "Stiffness");
-                DrawProp("impactRecoveryDamping",   "Damping");
-                DrawProp("impactRecoveryDuration",  "Duration");
+            Section("Shape Recovery — Impact", () => {
+                Prop("impactRecoveryStiffness", "Stiffness");
+                Prop("impactRecoveryDamping",   "Damping");
+                Prop("impactRecoveryDuration",  "Duration");
             });
 
-            DrawSection("Crouch", () => {
-                DrawProp("crouchDownForce",                    "Down Force");
-                DrawProp("crouchStiffnessMultiplier",          "Stiffness Multiplier");
-                DrawProp("crouchPressureMultiplier",           "Pressure Multiplier");
-                DrawProp("crouchNeighborFrequencyMultiplier",  "Neighbor Freq Multiplier");
-                DrawProp("crouchReleaseGroundedThreshold",     "Release Threshold");
+            Section("Crouch", () => {
+                Prop("crouchDownForce",                    "Down Force");
+                Prop("crouchStiffnessMultiplier",          "Stiffness Multiplier");
+                Prop("crouchPressureMultiplier",           "Pressure Multiplier");
+                Prop("crouchNeighborFrequencyMultiplier",  "Neighbor Freq Multiplier");
+                Prop("crouchReleaseGroundedThreshold",     "Release Grounded Threshold");
             });
 
-            DrawSection("Shape Recovery — Jump", () => {
-                DrawProp("jumpRecoveryStiffness", "Stiffness");
-                DrawProp("jumpRecoveryDamping",   "Damping");
-                DrawProp("jumpRecoveryDelay",     "Delay");
-                DrawProp("jumpRecoveryDuration",  "Duration");
+            Section("Shape Recovery — Jump", () => {
+                Prop("jumpRecoveryStiffness", "Stiffness");
+                Prop("jumpRecoveryDamping",   "Damping");
+                Prop("jumpRecoveryDelay",     "Delay");
+                Prop("jumpRecoveryDuration",  "Duration");
             });
 
-            DrawSection("Mass", () => {
-                DrawProp("centerMass",    "Center Mass");
-                DrawProp("perimeterMass", "Perimeter Mass");
+            Section("Mass", () => {
+                Prop("centerMass",    "Center Mass");
+                Prop("perimeterMass", "Perimeter Mass");
             });
 
-            DrawSection("Gravity", () => {
-                DrawProp("gravityScale",          "Center Gravity Scale");
-                DrawProp("perimeterGravityScale", "Perimeter Gravity Scale");
+            Section("Gravity", () => {
+                Prop("gravityScale",          "Center Gravity Scale");
+                Prop("perimeterGravityScale", "Perimeter Gravity Scale");
             });
 
-            DrawSection("Damping — Airborne", () => {
-                DrawProp("airborneDamping",       "Perimeter Damping");
-                DrawProp("airborneCenterDamping", "Center Damping");
+            Section("Damping — Airborne", () => {
+                Prop("airborneDamping",       "Perimeter Damping");
+                Prop("airborneCenterDamping", "Center Damping");
             });
 
-            DrawSection("Damping — Grounded", () => {
-                DrawProp("groundedDamping",        "Perimeter Damping");
-                DrawProp("groundedCenterDamping",  "Center Damping");
-                DrawProp("dampingTransitionSpeed", "Transition Speed");
+            Section("Damping — Grounded", () => {
+                Prop("groundedDamping",        "Perimeter Damping");
+                Prop("groundedCenterDamping",  "Center Damping");
+                Prop("dampingTransitionSpeed", "Transition Speed");
             });
 
-            DrawSection("Angular Separation", () => {
-                DrawProp("minAngularSeparation", "Min Angular Separation");
-                DrawProp("separationForce",      "Separation Force");
+            Section("Angular Separation", () => {
+                Prop("minAngularSeparation", "Min Angular Separation");
+                Prop("separationForce",      "Separation Force");
             });
 
-            DrawSection("Safety", () => {
-                DrawProp("maxNodeSpeed",       "Max Node Speed");
-                DrawProp("maxRecoveryForce",   "Max Recovery Force");
-                DrawProp("antiSinkForceScale", "Anti-Sink Force Scale");
+            Section("Safety", () => {
+                Prop("maxNodeSpeed",       "Max Node Speed");
+                Prop("maxRecoveryForce",   "Max Recovery Force");
+                Prop("antiSinkForceScale", "Anti-Sink Force Scale");
             });
 
             serializedObject.ApplyModifiedProperties();
             if (GUI.changed) SceneView.RepaintAll();
         }
 
-        private void DrawSection(string title, System.Action content)
+        private void Section(string title, System.Action content)
         {
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField(title, EditorStyles.boldLabel);
@@ -111,11 +111,10 @@ namespace Hideout.Slime.Editor
             EditorGUI.indentLevel--;
         }
 
-        private void DrawProp(string propName, string label)
+        private void Prop(string name, string label)
         {
-            var prop = serializedObject.FindProperty(propName);
-            if (prop != null)
-                EditorGUILayout.PropertyField(prop, new GUIContent(label));
+            var p = serializedObject.FindProperty(name);
+            if (p != null) EditorGUILayout.PropertyField(p, new GUIContent(label));
         }
     }
 }

@@ -3,101 +3,123 @@ using UnityEngine;
 namespace Hideout.Slime
 {
     /// <summary>
-    /// Viscous soft-body slime: center Rigidbody2D + N perimeter nodes connected
-    /// by a spring network with cross-bracing and internal pressure.
+    /// Viscous soft-body slime built on Unity's 2D physics solver.
     ///
-    /// Spring network topology (per node i):
-    ///   Radial   — node i ↔ center     (DistanceJoint2D, maxDistanceOnly = true)
-    ///                                   Tether only — zero compressive force into ground.
-    ///   Neighbor — node i ↔ node i+1   (SpringJoint2D — ring integrity + elasticity)
-    ///   Brace    — node i ↔ node i+2   (SpringJoint2D — prevents topological inversion)
+    /// Architecture:
+    ///   One heavy center Rigidbody2D (no collider, full gravity) anchors the body.
+    ///   N lightweight perimeter Rigidbody2D nodes with CircleCollider2Ds form the
+    ///   surface, on a dedicated "Slime" layer with self-collision disabled.
     ///
-    /// Recovery model (Müller et al. 2005 shape matching):
-    ///   Every frame, compute the best-fit rigid rotation of the rest shape onto
-    ///   the current deformed shape using the 2×2 cross-covariance matrix (reduces
-    ///   to a single atan2 in 2D). Apply spring-like forces pulling each node toward
-    ///   its goal position in the rotated rest frame.
+    /// Spring topology (per node i, set once at build, never modified at runtime):
+    ///   Radial   — node i ↔ center   : DistanceJoint2D, maxDistanceOnly = true.
+    ///              Tether only. Prevents outward explosion but exerts zero
+    ///              compressive force into terrain.
+    ///   Neighbor — node i ↔ node i+1 : SpringJoint2D. Ring connectivity + elasticity.
     ///
-    ///   A single RecoverShape(stiffness, damping) function handles all recovery
-    ///   contexts — idle settling, post-impact, and post-jump — by varying only
-    ///   the stiffness and damping parameters. This avoids duplicated logic and
-    ///   the failed spring-distance-manipulation approach (which has no global
-    ///   shape awareness and is overridden by autoConfigureDistance).
+    /// Shape recovery (Müller et al. 2005 shape matching, 2D specialization):
+    ///   Cross-covariance matrix Apq → best-fit rotation via atan2 → PD force
+    ///   pulling each node toward its goal position in the rotated rest frame.
+    ///   Damping acts on velocity relative to body-frame motion so it never
+    ///   fights gravity or locomotion.
     ///
-    /// Springs are set once at build time and never modified at runtime.
-    /// Springs provide elasticity and structural connectivity.
-    /// Shape matching provides global recovery — these two do complementary jobs.
+    ///   TERRAIN-AWARE CLAMPING: For grounded nodes, the recovery force component
+    ///   that opposes the contact normal is stripped. The tangential component is
+    ///   preserved so nodes slide toward goal positions along surfaces. This
+    ///   prevents the fundamental failure mode where goal positions below terrain
+    ///   generate forces that push nodes through the ground.
     ///
-    /// Zero per-frame GC allocation.
+    /// Pressure (deficit-only):
+    ///   Fires only when polygon area drops below rest area. Force = deficit *
+    ///   strength along averaged adjacent edge normals. Same terrain-aware
+    ///   clamping applied to prevent pressure from pushing grounded nodes into
+    ///   surfaces.
+    ///
+    /// Crouch:
+    ///   Recovery stiffness and pressure are multiplied down so the body goes
+    ///   limp. Neighbor spring frequency is temporarily reduced so the ring can
+    ///   reshape. Grounded nodes receive force along their surface tangent
+    ///   (gravity-biased, computed by SlimeNodeContact) so they flow along
+    ///   geometry into crevices rather than crushing flat.
+    ///
+    /// Zero per-frame GC allocation. All tunable via inspector.
     /// </summary>
     [DefaultExecutionOrder(-10)]
     public class SlimeBody : MonoBehaviour
     {
-        // ── Inspector ─────────────────────────────────────────────────────────
+        // ── Inspector: Shape ──────────────────────────────────────────────────
 
         [Header("Body Shape")]
         [Range(6, 24)]
-        public int nodeCount = 12;
-        public float bodyRadius     = 0.5f;
+        public int   nodeCount     = 12;
+        public float bodyRadius    = 0.5f;
         public float colliderRadius = 0.05f;
 
+        // ── Inspector: Springs ────────────────────────────────────────────────
+
         [Header("Springs")]
-        [Tooltip("Radial spring frequency (node↔center). Safe range 3–12 Hz at 50 Hz physics.")]
+        [Tooltip("Radial tether frequency (node↔center). 3–12 Hz.")]
         public float radialFrequency = 6f;
-        [Tooltip("Neighbor/brace spring frequency (node↔node).")]
+
+        [Tooltip("Neighbor ring spring frequency (node↔node).")]
         public float neighborFrequency = 4f;
+
         [Range(0f, 1f)]
-        [Tooltip("Spring damping ratio. 0.2 = underdamped (2–3 bounces). 1.0 = no overshoot.")]
+        [Tooltip("Spring damping ratio. 0.2 = bouncy, 1.0 = critically damped.")]
         public float springDamping = 0.2f;
+
+        // ── Inspector: Elasticity ─────────────────────────────────────────────
 
         [Header("Elasticity")]
         [Range(0f, 1f)]
-        [Tooltip("Physics material bounciness. Additive to spring rebound. Keep ≤ 0.5.")]
+        [Tooltip("Physics material bounciness. Keep ≤ 0.5.")]
         public float bounciness = 0.3f;
 
+        // ── Inspector: Pressure ───────────────────────────────────────────────
+
         [Header("Pressure")]
-        [Tooltip("Force per unit of area deficit. Higher = harder to compress. Original used ~5.")]
+        [Tooltip("Force per unit area deficit. Higher = harder to compress.")]
         public float pressureStrength = 5f;
 
+        // ── Inspector: Recovery ───────────────────────────────────────────────
+
         [Header("Shape Recovery — Idle")]
-        [Tooltip("Stiffness of recovery force when resting. Low = wobbly, high = rigid. 50–200.")]
         public float idleRecoveryStiffness = 150f;
-        [Tooltip("Damping of recovery force when resting. Reduces oscillation. 8–20.")]
         public float idleRecoveryDamping   = 4f;
 
         [Header("Shape Recovery — Impact")]
-        [Tooltip("Stiffness boost on landing. Snaps shape back faster after squash.")]
         public float impactRecoveryStiffness = 250f;
-        [Tooltip("Damping during impact recovery. Higher = less post-impact wobble.")]
         public float impactRecoveryDamping   = 8f;
-        [Tooltip("How long after landing the impact recovery runs before fading to idle. Seconds.")]
         public float impactRecoveryDuration  = 0.25f;
 
         [Header("Shape Recovery — Jump")]
-        [Tooltip("Stiffness during jump unfurl window. Pulls nodes toward rest shape as slime rises.")]
         public float jumpRecoveryStiffness = 180f;
-        [Tooltip("Damping during jump unfurl.")]
         public float jumpRecoveryDamping   = 6f;
-        [Tooltip("Seconds after jump before unfurl begins.")]
         public float jumpRecoveryDelay     = 0.05f;
-        [Tooltip("Duration of the unfurl window.")]
         public float jumpRecoveryDuration  = 0.3f;
 
+        // ── Inspector: Crouch ─────────────────────────────────────────────────
+
         [Header("Crouch")]
-        [Tooltip("Continuous downward force applied while crouching. Weaker than a jump.")]
+        [Tooltip("Downward force applied while crouching.")]
         public float crouchDownForce = 6f;
-        [Tooltip("How much to reduce idle recovery stiffness while crouching. 0 = fully limp, 1 = no change.")]
+
         [Range(0f, 1f)]
+        [Tooltip("Idle stiffness multiplier while crouching. 0.05 = nearly limp.")]
         public float crouchStiffnessMultiplier = 0.05f;
-        [Tooltip("Grounded ratio threshold below which release-recovery is suppressed (tight crevice).")]
+
         [Range(0f, 1f)]
-        public float crouchReleaseGroundedThreshold = 0.4f;
-        [Tooltip("How much to reduce pressure while crouching. 0 = no resistance to shape change, 1 = no change. Keep low so slime can flow into geometry.")]
-        [Range(0f, 1f)]
+        [Tooltip("Pressure multiplier while crouching. Low = flows freely.")]
         public float crouchPressureMultiplier = 0.1f;
-        [Tooltip("Multiplier for neighbor spring frequency while crouching. Lower = ring reshapes easier. 0.2–0.5.")]
+
         [Range(0.05f, 1f)]
+        [Tooltip("Neighbor spring frequency multiplier while crouching. Low = ring reshapes easily.")]
         public float crouchNeighborFrequencyMultiplier = 0.3f;
+
+        [Range(0f, 1f)]
+        [Tooltip("GroundedRatio below which crouch release triggers recovery burst.")]
+        public float crouchReleaseGroundedThreshold = 0.4f;
+
+        // ── Inspector: Mass & Gravity ─────────────────────────────────────────
 
         [Header("Mass")]
         public float centerMass    = 2f;
@@ -105,79 +127,79 @@ namespace Hideout.Slime
 
         [Header("Gravity")]
         public float gravityScale          = 1f;
-        [Tooltip("Separate gravity scale for perimeter nodes. Lower = less downward force per step, easier for solver to hold nodes above terrain.")]
+        [Tooltip("Perimeter gravity scale. Lower = less downward force per step, easier for solver.")]
         public float perimeterGravityScale = 0.5f;
 
+        // ── Inspector: Damping ────────────────────────────────────────────────
+
         [Header("Damping — Airborne")]
-        [Tooltip("Near-zero so spring oscillation is the only damping in freefall.")]
         public float airborneDamping       = 0.05f;
         public float airborneCenterDamping = 0.1f;
 
         [Header("Damping — Grounded")]
-        [Tooltip("Viscous settling after bounce. Spring oscillation runs first.")]
         public float groundedDamping       = 1.0f;
         public float groundedCenterDamping = 1.5f;
-
-        [Tooltip("How quickly linearDamping transitions between airborne and grounded.")]
         public float dampingTransitionSpeed = 4f;
 
+        // ── Inspector: Angular Separation ─────────────────────────────────────
+
         [Header("Angular Separation")]
-        [Tooltip("Minimum angular gap between adjacent nodes as fraction of ideal spacing. 0.5–0.7.")]
+        [Tooltip("Min angular gap as fraction of ideal spacing. 0.5–0.7.")]
         public float minAngularSeparation = 0.6f;
-        [Tooltip("Force pushing nodes apart when gap falls below minimum.")]
         public float separationForce = 5f;
 
+        // ── Inspector: Safety ─────────────────────────────────────────────────
+
         [Header("Safety")]
-        [Tooltip("Max speed any perimeter node can reach. Prevents cascade decomposition.")]
-        public float maxNodeSpeed = 20f;
-        [Tooltip("Max recovery force magnitude per node. Prevents explosion on extreme deformation.")]
-        public float maxRecoveryForce = 500f;
-        [Tooltip("Force scale applied per unit of ground penetration depth to push nodes back out. Passed to SlimeNodeContact.")]
+        public float maxNodeSpeed       = 20f;
+        public float maxRecoveryForce   = 500f;
+        [Tooltip("Anti-sink force scale passed to SlimeNodeContact.")]
         public float antiSinkForceScale = 150f;
 
-        // ── Public ────────────────────────────────────────────────────────────
+        // ── Public API (read) ─────────────────────────────────────────────────
 
+        /// <summary>World positions of all perimeter nodes. Updated each FixedUpdate.</summary>
         public Vector2[] PerimeterPositions { get; private set; }
 
-        public Vector2 CenterPosition => _centerBody != null
-            ? (Vector2)_centerBody.position
+        /// <summary>World position of the center body.</summary>
+        public Vector2 CenterPosition => _center != null
+            ? (Vector2)_center.position
             : (Vector2)transform.position;
 
-        public Vector2 Velocity => _centerBody != null
-            ? _centerBody.linearVelocity
+        /// <summary>Velocity of the center body.</summary>
+        public Vector2 Velocity => _center != null
+            ? _center.linearVelocity
             : Vector2.zero;
 
-        /// <summary>0 = fully airborne, 1 = all nodes grounded. Smoothed over time.</summary>
+        /// <summary>0 = fully airborne, 1 = all nodes grounded. Smoothed.</summary>
         public float GroundedRatio { get; private set; }
 
-        /// <summary>Mass-weighted centroid of all bodies. Cached once per FixedUpdate.</summary>
+        /// <summary>Mass-weighted centroid. Cached each FixedUpdate.</summary>
         public Vector2 Centroid { get; private set; }
 
-        // ── Internal ──────────────────────────────────────────────────────────
+        // ── Internal state ────────────────────────────────────────────────────
 
-        private Rigidbody2D        _centerBody;
-        private Rigidbody2D[]      _perimeterBodies;
-        private DistanceJoint2D[]  _radialSprings;
+        private Rigidbody2D        _center;
+        private Rigidbody2D[]      _nodes;
+        private DistanceJoint2D[]  _radialJoints;
         private SpringJoint2D[]    _neighborSprings;
-        private SlimeNodeContact[] _nodeContacts;
+        private SlimeNodeContact[] _contacts;
 
-        // Shape matching rest state — computed once at build, never modified
-        private Vector2[] _restOffsets;   // perimeter node offsets from rest centroid
+        private Vector2[] _restOffsets;        // rest-shape offsets from centroid
+        private Vector2[] _lastValidPositions; // NaN recovery fallback
         private float     _totalMass;
-
-        private Vector2[] _lastValidPositions;
-        private float     _restArea;  // polygon area of rest shape, computed once at build
+        private float     _restArea;
 
         private float _perimeterDamping;
         private float _centerDamping;
 
-        // Recovery state
-        private bool  _isCrouching         = false;
-        private float _impactRecoveryTimer = 0f;  // counts down from impactRecoveryDuration
-        private float _jumpTimer           = 0f;  // counts up from jump moment
-        private bool  _jumpActive          = false;
+        // State machines
+        private bool  _isCrouching;
+        private float _impactTimer;   // counts down from impactRecoveryDuration
+        private float _jumpTimer;     // counts up from jump moment
+        private bool  _jumpActive;
 
-        private PhysicsMaterial2D _physicsMaterial;
+        private PhysicsMaterial2D _material;
         private GameObject        _nodesParent;
 
         private const float CornerEscapeForce = 5f;
@@ -186,56 +208,48 @@ namespace Hideout.Slime
 
         private void Awake()
         {
-            Physics2D.velocityIterations = 16;
-            Physics2D.positionIterations = 8;
-            Time.fixedDeltaTime          = 0.01f; // 100 Hz — halved timestep improves solver convergence quadratically
-
-            int slimeLayer = LayerMask.NameToLayer("Slime");
-            if (slimeLayer != -1)
-                Physics2D.IgnoreLayerCollision(slimeLayer, slimeLayer, true);
-            else
-                Debug.LogWarning("[SlimeBody] No 'Slime' layer found. Add it in Project Settings → Tags and Layers. Nodes will collide with each other.");
-
-            BuildPhysicsMaterial();
+            ConfigurePhysics();
             BuildBody();
-
             _perimeterDamping = airborneDamping;
             _centerDamping    = airborneCenterDamping;
         }
 
         private void FixedUpdate()
         {
-            CachePositions();
-            CacheCentroid();
-            CacheGroundedRatio();
-
-            ClampVelocities();   // after cache so we act on fresh positions
-
-            ApplyPressure();
-            ApplyRecovery();
-            EnforceAngularSeparation();
-            UpdateDamping();
-            UpdateCrouchSprings();
+            Sense();
+            Actuate();
         }
 
-        // ── Build ─────────────────────────────────────────────────────────────
+        // ── Physics configuration ─────────────────────────────────────────────
 
-        private void BuildPhysicsMaterial()
+        private void ConfigurePhysics()
         {
-            _physicsMaterial            = new PhysicsMaterial2D("SlimeMaterial");
-            _physicsMaterial.friction   = 0.4f;
-            _physicsMaterial.bounciness = bounciness;
+            Physics2D.velocityIterations = 16;
+            Physics2D.positionIterations = 8;
+            Time.fixedDeltaTime          = 0.01f;
+
+            int slimeLayer = LayerMask.NameToLayer("Slime");
+            if (slimeLayer != -1)
+                Physics2D.IgnoreLayerCollision(slimeLayer, slimeLayer, true);
+            else
+                Debug.LogWarning("[SlimeBody] 'Slime' layer missing. Add it in Tags and Layers.");
+
+            _material            = new PhysicsMaterial2D("SlimeMat");
+            _material.friction   = 0.4f;
+            _material.bounciness = bounciness;
         }
+
+        // ── Body construction ─────────────────────────────────────────────────
 
         private void BuildBody()
         {
             int n = nodeCount;
 
             PerimeterPositions  = new Vector2[n];
-            _perimeterBodies    = new Rigidbody2D[n];
-            _radialSprings      = new DistanceJoint2D[n];
+            _nodes              = new Rigidbody2D[n];
+            _radialJoints       = new DistanceJoint2D[n];
             _neighborSprings    = new SpringJoint2D[n];
-            _nodeContacts       = new SlimeNodeContact[n];
+            _contacts           = new SlimeNodeContact[n];
             _restOffsets        = new Vector2[n];
             _lastValidPositions = new Vector2[n];
 
@@ -243,106 +257,120 @@ namespace Hideout.Slime
             _nodesParent.transform.SetParent(transform);
             _nodesParent.transform.localPosition = Vector3.zero;
 
-            _centerBody = CreateNode("Center", Vector2.zero, centerMass, airborneCenterDamping, hasCollider: false);
+            _center = MakeRigidbody("Center", Vector2.zero, centerMass,
+                airborneCenterDamping, gravityScale, collider: false);
 
-            float angleStep = 360f / n;
+            float step = 2f * Mathf.PI / n;
             for (int i = 0; i < n; i++)
             {
-                float   angle  = i * angleStep * Mathf.Deg2Rad;
+                float angle   = i * step;
                 Vector2 offset = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * bodyRadius;
-                _restOffsets[i]        = offset; // offset from rest centroid (origin)
-                _lastValidPositions[i] = (Vector2)transform.position + offset;
-                _perimeterBodies[i]    = CreateNode($"Node_{i}", offset, perimeterMass, airborneDamping);
 
-                _nodeContacts[i] = _perimeterBodies[i].gameObject.AddComponent<SlimeNodeContact>();
-                _nodeContacts[i].Init(this, CornerEscapeForce, maxNodeSpeed, antiSinkForceScale);
+                _restOffsets[i]        = offset;
+                _lastValidPositions[i] = (Vector2)transform.position + offset;
+                _nodes[i]              = MakeRigidbody($"Node_{i}", offset, perimeterMass,
+                    airborneDamping, perimeterGravityScale, collider: true);
+
+                _contacts[i] = _nodes[i].gameObject.AddComponent<SlimeNodeContact>();
+                _contacts[i].Init(this, CornerEscapeForce, maxNodeSpeed, antiSinkForceScale);
             }
 
-            // Total mass for centroid weighting
             _totalMass = centerMass + n * perimeterMass;
 
-            // Rest area — computed once, used by ApplyPressure to detect compression
+            // Rest area via shoelace formula
             _restArea = 0f;
             for (int i = 0; i < n; i++)
             {
                 int next = (i + 1) % n;
-                _restArea += _restOffsets[i].x * _restOffsets[next].y;
-                _restArea -= _restOffsets[next].x * _restOffsets[i].y;
+                _restArea += _restOffsets[i].x * _restOffsets[next].y
+                           - _restOffsets[next].x * _restOffsets[i].y;
             }
             _restArea = Mathf.Abs(_restArea) * 0.5f;
 
+            // Wire joints
             for (int i = 0; i < n; i++)
             {
-                // Radial: node ↔ center — DistanceJoint2D with maxDistanceOnly.
-                var dj = _perimeterBodies[i].gameObject.AddComponent<DistanceJoint2D>();
-                dj.connectedBody         = _centerBody;
-                dj.distance              = bodyRadius;
-                dj.maxDistanceOnly       = true;
+                // Radial tether
+                var dj = _nodes[i].gameObject.AddComponent<DistanceJoint2D>();
+                dj.connectedBody        = _center;
+                dj.distance             = bodyRadius;
+                dj.maxDistanceOnly      = true;
                 dj.autoConfigureDistance = false;
-                dj.enableCollision       = false;
-                _radialSprings[i]        = dj;
+                dj.enableCollision      = false;
+                _radialJoints[i]        = dj;
 
-                // Neighbor: node i ↔ node i+1 (SpringJoint2D — bidirectional restoration)
-                int   next  = (i + 1) % n;
+                // Neighbor spring
+                int next    = (i + 1) % n;
                 float nDist = Vector2.Distance(_restOffsets[i], _restOffsets[next]);
-                _neighborSprings[i] = AddSpring(
-                    _perimeterBodies[i].gameObject, _perimeterBodies[next], nDist, neighborFrequency);
+                _neighborSprings[i] = MakeSpring(
+                    _nodes[i].gameObject, _nodes[next], nDist, neighborFrequency);
             }
         }
 
-        private Rigidbody2D CreateNode(string nodeName, Vector2 localOffset, float mass, float damping, bool hasCollider = true)
+        private Rigidbody2D MakeRigidbody(string name, Vector2 localPos, float mass,
+            float damping, float gravity, bool collider)
         {
-            var go = new GameObject(nodeName);
+            var go = new GameObject(name);
             go.transform.SetParent(_nodesParent.transform);
-            go.transform.localPosition = localOffset;
+            go.transform.localPosition = localPos;
 
             int slimeLayer = LayerMask.NameToLayer("Slime");
             go.layer = slimeLayer != -1 ? slimeLayer : gameObject.layer;
 
             var rb = go.AddComponent<Rigidbody2D>();
-            rb.mass         = mass;
-            rb.gravityScale = hasCollider ? perimeterGravityScale : gravityScale;
-            rb.constraints  = RigidbodyConstraints2D.FreezeRotation;
+            rb.mass                   = mass;
+            rb.gravityScale           = gravity;
+            rb.constraints            = RigidbodyConstraints2D.FreezeRotation;
             rb.linearDamping          = damping;
             rb.angularDamping         = 0.05f;
             rb.interpolation          = RigidbodyInterpolation2D.Interpolate;
             rb.sleepMode              = RigidbodySleepMode2D.NeverSleep;
             rb.collisionDetectionMode = CollisionDetectionMode2D.Discrete;
 
-            if (hasCollider)
+            if (collider)
             {
-                var col           = go.AddComponent<CircleCollider2D>();
+                var col        = go.AddComponent<CircleCollider2D>();
                 col.radius         = colliderRadius;
-                col.sharedMaterial = _physicsMaterial;
+                col.sharedMaterial = _material;
             }
 
             return rb;
         }
 
-        private SpringJoint2D AddSpring(GameObject from, Rigidbody2D to, float restLength, float frequency)
+        private SpringJoint2D MakeSpring(GameObject from, Rigidbody2D to,
+            float restLength, float frequency)
         {
-            var spring = from.AddComponent<SpringJoint2D>();
-            spring.connectedBody         = to;
-            spring.distance              = restLength;
-            spring.frequency             = frequency;
-            spring.dampingRatio          = springDamping;
-            spring.autoConfigureDistance = false;
-            spring.enableCollision       = false;
-            return spring;
+            var s = from.AddComponent<SpringJoint2D>();
+            s.connectedBody        = to;
+            s.distance             = restLength;
+            s.frequency            = frequency;
+            s.dampingRatio         = springDamping;
+            s.autoConfigureDistance = false;
+            s.enableCollision      = false;
+            return s;
         }
 
-        // ── SENSE ─────────────────────────────────────────────────────────────
+        // ══════════════════════════════════════════════════════════════════════
+        //  SENSE — read world state into cached arrays
+        // ══════════════════════════════════════════════════════════════════════
 
-        private void CachePositions()
+        private void Sense()
+        {
+            SensePositions();
+            SenseCentroid();
+            SenseGroundedRatio();
+        }
+
+        private void SensePositions()
         {
             for (int i = 0; i < nodeCount; i++)
             {
-                Vector2 pos = _perimeterBodies[i].position;
+                Vector2 pos = _nodes[i].position;
                 if (float.IsNaN(pos.x) || float.IsNaN(pos.y))
                 {
-                    _perimeterBodies[i].position       = _lastValidPositions[i];
-                    _perimeterBodies[i].linearVelocity = Vector2.zero;
-                    PerimeterPositions[i]              = _lastValidPositions[i];
+                    _nodes[i].position       = _lastValidPositions[i];
+                    _nodes[i].linearVelocity = Vector2.zero;
+                    PerimeterPositions[i]    = _lastValidPositions[i];
                 }
                 else
                 {
@@ -352,19 +380,19 @@ namespace Hideout.Slime
             }
         }
 
-        private void CacheCentroid()
+        private void SenseCentroid()
         {
-            Vector2 sum = _centerBody.position * centerMass;
+            Vector2 sum = _center.position * centerMass;
             for (int i = 0; i < nodeCount; i++)
                 sum += PerimeterPositions[i] * perimeterMass;
             Centroid = sum / _totalMass;
         }
 
-        private void CacheGroundedRatio()
+        private void SenseGroundedRatio()
         {
             int grounded = 0;
             for (int i = 0; i < nodeCount; i++)
-                if (_nodeContacts[i].IsGrounded) grounded++;
+                if (_contacts[i].IsGrounded) grounded++;
 
             float target = grounded / (float)nodeCount;
             GroundedRatio = Mathf.MoveTowards(
@@ -372,70 +400,96 @@ namespace Hideout.Slime
                 dampingTransitionSpeed * Time.fixedDeltaTime);
         }
 
-        // ── SAFETY ────────────────────────────────────────────────────────────
+        // ══════════════════════════════════════════════════════════════════════
+        //  ACTUATE — apply forces and constraints
+        // ══════════════════════════════════════════════════════════════════════
+
+        private void Actuate()
+        {
+            ClampVelocities();
+            ApplyPressure();
+            ApplyRecovery();
+            EnforceAngularSeparation();
+            UpdateDamping();
+            UpdateCrouchSprings();
+        }
+
+        // ── Velocity clamping ─────────────────────────────────────────────────
 
         private void ClampVelocities()
         {
-            _centerBody.linearVelocity =
-                Vector2.ClampMagnitude(_centerBody.linearVelocity, maxNodeSpeed);
+            _center.linearVelocity =
+                Vector2.ClampMagnitude(_center.linearVelocity, maxNodeSpeed);
 
             for (int i = 0; i < nodeCount; i++)
-                _perimeterBodies[i].linearVelocity =
-                    Vector2.ClampMagnitude(_perimeterBodies[i].linearVelocity, maxNodeSpeed);
+                _nodes[i].linearVelocity =
+                    Vector2.ClampMagnitude(_nodes[i].linearVelocity, maxNodeSpeed);
         }
 
-        // ── PRESSURE ─────────────────────────────────────────────────────────
+        // ── Pressure ──────────────────────────────────────────────────────────
+        //
+        // Deficit-only model: outward force proportional to how much the polygon
+        // area has shrunk below rest. No force when at or above rest area.
+        //
+        // Terrain-aware: for grounded nodes, the pressure force component that
+        // would push into the contact surface is removed. Pressure should expand
+        // the body outward into free space, not through solid geometry.
 
         private void ApplyPressure()
         {
             int n = nodeCount;
 
-            float currentArea = 0f;
+            // Current polygon area via shoelace
+            float area = 0f;
             for (int i = 0; i < n; i++)
             {
                 int next = (i + 1) % n;
-                currentArea += PerimeterPositions[i].x * PerimeterPositions[next].y;
-                currentArea -= PerimeterPositions[next].x * PerimeterPositions[i].y;
+                area += PerimeterPositions[i].x * PerimeterPositions[next].y
+                      - PerimeterPositions[next].x * PerimeterPositions[i].y;
             }
-            currentArea = Mathf.Abs(currentArea) * 0.5f;
+            area = Mathf.Abs(area) * 0.5f;
 
-            float deficit = _restArea - currentArea;
+            float deficit = _restArea - area;
             if (deficit <= 0f) return;
 
-            float forceMag = deficit * EffectivePressureStrength;
+            float strength = deficit * EffectivePressure;
 
             for (int i = 0; i < n; i++)
             {
                 int prev = (i - 1 + n) % n;
                 int next = (i + 1) % n;
 
-                Vector2 edgePrev = PerimeterPositions[i]    - PerimeterPositions[prev];
-                Vector2 edgeNext = PerimeterPositions[next] - PerimeterPositions[i];
-                Vector2 nPrev    = new Vector2(-edgePrev.y,  edgePrev.x).normalized;
-                Vector2 nNext    = new Vector2(-edgeNext.y,  edgeNext.x).normalized;
-                Vector2 outward  = ((nPrev + nNext) * 0.5f).normalized;
+                // Outward normal at node: average of adjacent edge perpendiculars
+                Vector2 ePrev   = PerimeterPositions[i]    - PerimeterPositions[prev];
+                Vector2 eNext   = PerimeterPositions[next] - PerimeterPositions[i];
+                Vector2 nPrev   = new Vector2(-ePrev.y, ePrev.x).normalized;
+                Vector2 nNext   = new Vector2(-eNext.y, eNext.x).normalized;
+                Vector2 outward = ((nPrev + nNext) * 0.5f).normalized;
 
-                // FIX: For grounded nodes, remove the component of pressure force
-                // that pushes into the terrain. Pressure should expand the slime
-                // outward but never push a grounded node through its contact surface.
-                if (_nodeContacts[i].IsGrounded)
-                {
-                    Vector2 normal = _nodeContacts[i].ContactNormal;
-                    float intoTerrain = Vector2.Dot(outward, -normal);
-                    if (intoTerrain > 0f)
-                        outward += normal * intoTerrain; // cancel the into-terrain component
-                    // Re-normalize; if outward is near zero the node is being pushed
-                    // directly into terrain — skip it entirely
-                    float len = outward.magnitude;
-                    if (len < 0.01f) continue;
-                    outward /= len;
-                }
+                // Terrain clamp: strip the into-surface component
+                if (_contacts[i].IsGrounded)
+                    outward = ClampAwayFromSurface(outward, _contacts[i].ContactNormal);
 
-                _perimeterBodies[i].AddForce(outward * forceMag);
+                if (outward.sqrMagnitude < 0.0001f) continue;
+
+                _nodes[i].AddForce(outward * strength);
             }
         }
 
-        // ── RECOVERY ─────────────────────────────────────────────────────────
+        // ── Shape recovery ────────────────────────────────────────────────────
+        //
+        // Müller et al. 2005 shape matching, 2D polar decomposition.
+        //
+        // Three contexts share one function with different stiffness/damping:
+        //   Idle    — constant low-stiffness baseline
+        //   Impact  — high-stiffness burst after landing, fades linearly
+        //   Jump    — medium-stiffness unfurl during ascent window
+        //
+        // TERRAIN-AWARE CLAMPING: For grounded nodes, the component of the
+        // recovery force that opposes the contact normal is removed. This
+        // preserves tangential sliding toward goal positions while preventing
+        // forces from driving nodes through terrain — the root cause of
+        // intersection in the original implementation.
 
         private void ApplyRecovery()
         {
@@ -447,46 +501,36 @@ namespace Hideout.Slime
             {
                 _jumpTimer += dt;
 
-                if (_centerBody.linearVelocity.y < 0.5f)
+                if (_center.linearVelocity.y < 0.5f)
                     _jumpActive = false;
                 else if (_jumpTimer > jumpRecoveryDelay + jumpRecoveryDuration)
                     _jumpActive = false;
 
                 bool inWindow = _jumpActive && _jumpTimer >= jumpRecoveryDelay;
-                stiffness = inWindow ? jumpRecoveryStiffness : EffectiveIdleStiffness;
+                stiffness = inWindow ? jumpRecoveryStiffness : EffectiveStiffness;
                 damping   = inWindow ? jumpRecoveryDamping   : idleRecoveryDamping;
             }
-            else if (_impactRecoveryTimer > 0f)
+            else if (_impactTimer > 0f)
             {
-                _impactRecoveryTimer -= dt;
-                float t = _impactRecoveryTimer / impactRecoveryDuration;
-                stiffness = Mathf.Lerp(EffectiveIdleStiffness,  impactRecoveryStiffness, t);
-                damping   = Mathf.Lerp(idleRecoveryDamping,     impactRecoveryDamping,   t);
+                _impactTimer -= dt;
+                float t = _impactTimer / impactRecoveryDuration;
+                stiffness = Mathf.Lerp(EffectiveStiffness, impactRecoveryStiffness, t);
+                damping   = Mathf.Lerp(idleRecoveryDamping, impactRecoveryDamping,  t);
             }
             else
             {
-                stiffness = EffectiveIdleStiffness;
+                stiffness = EffectiveStiffness;
                 damping   = idleRecoveryDamping;
             }
 
             RecoverShape(stiffness, damping);
         }
 
-        /// <summary>
-        /// Applies Müller shape matching forces to all perimeter nodes.
-        /// Pulls each node toward its goal position in the best-fit rotated rest frame.
-        ///
-        /// GROUNDED-AWARE CLAMPING: For grounded nodes, the recovery force component
-        /// that pushes into the terrain (opposing the contact normal) is removed.
-        /// This prevents shape matching from fighting the contact solver and eliminates
-        /// the primary cause of terrain intersection. The tangential component is kept
-        /// so grounded nodes still slide toward their goal positions along the surface.
-        /// </summary>
         private void RecoverShape(float stiffness, float damping)
         {
             int n = nodeCount;
 
-            // Build cross-covariance matrix Apq
+            // Cross-covariance matrix Apq
             float a00 = 0f, a01 = 0f, a10 = 0f, a11 = 0f;
             for (int i = 0; i < n; i++)
             {
@@ -499,217 +543,236 @@ namespace Hideout.Slime
                 a11 += m * p.y * q.y;
             }
 
+            // Best-fit rotation via 2D polar decomposition
             float theta = Mathf.Atan2(a10 - a01, a00 + a11);
             float cosT  = Mathf.Cos(theta);
             float sinT  = Mathf.Sin(theta);
 
-            Vector2 bodyVelocity = _centerBody.linearVelocity;
+            // Body-frame velocity: damp only relative motion so recovery doesn't
+            // fight gravity, locomotion, or jump impulse
+            Vector2 bodyVel = _center.linearVelocity;
 
             for (int i = 0; i < n; i++)
             {
-                Vector2 q       = _restOffsets[i];
-                Vector2 goalPos = Centroid + new Vector2(
+                // Goal position in rotated rest frame
+                Vector2 q    = _restOffsets[i];
+                Vector2 goal = Centroid + new Vector2(
                     cosT * q.x - sinT * q.y,
                     sinT * q.x + cosT * q.y);
 
-                Vector2 relVelocity = _perimeterBodies[i].linearVelocity - bodyVelocity;
+                Vector2 relVel = _nodes[i].linearVelocity - bodyVel;
 
-                Vector2 force = stiffness * (goalPos - PerimeterPositions[i])
-                              - damping   * relVelocity;
+                Vector2 force = stiffness * (goal - PerimeterPositions[i])
+                              - damping  * relVel;
 
+                // Clamp magnitude
                 float mag = force.magnitude;
                 if (mag > maxRecoveryForce)
-                    force = force * (maxRecoveryForce / mag);
+                    force *= maxRecoveryForce / mag;
 
-                // FIX: Grounded-aware clamping.
-                // If this node is touching terrain, remove the force component that
-                // pushes into the surface. Keep the tangential component so the node
-                // slides toward its goal along the surface rather than through it.
-                if (_nodeContacts[i].IsGrounded)
-                {
-                    Vector2 normal = _nodeContacts[i].ContactNormal;
-                    float intoSurface = Vector2.Dot(force, normal);
-                    if (intoSurface < 0f)
-                        force -= normal * intoSurface; // remove penetrating component
-                }
+                // Terrain-aware clamping: strip into-surface component
+                if (_contacts[i].IsGrounded)
+                    force = ClampAwayFromSurface(force, _contacts[i].ContactNormal);
 
-                _perimeterBodies[i].AddForce(force);
+                _nodes[i].AddForce(force);
             }
         }
 
-        // ── ANGULAR SEPARATION ────────────────────────────────────────────────
+        // ── Angular separation ────────────────────────────────────────────────
+        // Keeps nodes evenly distributed around the ring perimeter.
 
         private void EnforceAngularSeparation()
         {
-            Vector2 center     = _centerBody.position;
-            float   idealAngle = (2f * Mathf.PI) / nodeCount;
-            float   minAngle   = idealAngle * minAngularSeparation;
+            Vector2 center   = _center.position;
+            float idealAngle = (2f * Mathf.PI) / nodeCount;
+            float minAngle   = idealAngle * minAngularSeparation;
 
             for (int i = 0; i < nodeCount; i++)
             {
                 int next = (i + 1) % nodeCount;
 
-                Vector2 dirA = _perimeterBodies[i].position    - center;
-                Vector2 dirB = _perimeterBodies[next].position - center;
+                Vector2 dirA = _nodes[i].position    - center;
+                Vector2 dirB = _nodes[next].position - center;
 
                 float diff = Mathf.DeltaAngle(
                     Mathf.Atan2(dirA.y, dirA.x) * Mathf.Rad2Deg,
                     Mathf.Atan2(dirB.y, dirB.x) * Mathf.Rad2Deg) * Mathf.Deg2Rad;
 
-                if (Mathf.Abs(diff) < minAngle)
-                {
-                    float   violation = minAngle - Mathf.Abs(diff);
-                    float   sign      = diff >= 0f ? 1f : -1f;
-                    Vector2 tangA     = new Vector2(-dirA.normalized.y,  dirA.normalized.x);
-                    Vector2 tangB     = new Vector2(-dirB.normalized.y,  dirB.normalized.x);
+                if (Mathf.Abs(diff) >= minAngle) continue;
 
-                    _perimeterBodies[i].AddForce(   -tangA * sign * violation * separationForce);
-                    _perimeterBodies[next].AddForce( tangB * sign * violation * separationForce);
-                }
+                float   violation = minAngle - Mathf.Abs(diff);
+                float   sign      = diff >= 0f ? 1f : -1f;
+                Vector2 tangA     = new Vector2(-dirA.normalized.y,  dirA.normalized.x);
+                Vector2 tangB     = new Vector2(-dirB.normalized.y,  dirB.normalized.x);
+
+                _nodes[i].AddForce(   -tangA * sign * violation * separationForce);
+                _nodes[next].AddForce( tangB * sign * violation * separationForce);
             }
         }
 
-        // ── DAMPING ───────────────────────────────────────────────────────────
+        // ── Damping transition ────────────────────────────────────────────────
 
         private void UpdateDamping()
         {
-            float targetPerimeter = Mathf.Lerp(airborneDamping,       groundedDamping,       GroundedRatio);
-            float targetCenter    = Mathf.Lerp(airborneCenterDamping, groundedCenterDamping, GroundedRatio);
+            float targetP = Mathf.Lerp(airborneDamping,       groundedDamping,       GroundedRatio);
+            float targetC = Mathf.Lerp(airborneCenterDamping, groundedCenterDamping, GroundedRatio);
+            float dt      = dampingTransitionSpeed * Time.fixedDeltaTime;
 
-            _perimeterDamping = Mathf.MoveTowards(
-                _perimeterDamping, targetPerimeter, dampingTransitionSpeed * Time.fixedDeltaTime);
-            _centerDamping = Mathf.MoveTowards(
-                _centerDamping, targetCenter, dampingTransitionSpeed * Time.fixedDeltaTime);
+            _perimeterDamping = Mathf.MoveTowards(_perimeterDamping, targetP, dt);
+            _centerDamping    = Mathf.MoveTowards(_centerDamping,    targetC, dt);
 
             for (int i = 0; i < nodeCount; i++)
-                _perimeterBodies[i].linearDamping = _perimeterDamping;
-            _centerBody.linearDamping = _centerDamping;
+                _nodes[i].linearDamping = _perimeterDamping;
+            _center.linearDamping = _centerDamping;
         }
 
-        // ── CROUCH SPRING MODULATION ──────────────────────────────────────────
-        // Reduces neighbor spring frequency while crouching so the ring can
-        // reshape to fit crevice geometry. Restores full frequency on release.
+        // ── Crouch spring modulation ──────────────────────────────────────────
+        // Temporarily reduces neighbor spring frequency while crouching so the
+        // ring perimeter can reshape to match crevice geometry instead of
+        // snapping back to its rest-length polygon.
 
         private void UpdateCrouchSprings()
         {
-            float targetFreq = _isCrouching
+            float freq = _isCrouching
                 ? neighborFrequency * crouchNeighborFrequencyMultiplier
                 : neighborFrequency;
 
             for (int i = 0; i < nodeCount; i++)
-                _neighborSprings[i].frequency = targetFreq;
+                _neighborSprings[i].frequency = freq;
         }
 
-        // ── Public API ────────────────────────────────────────────────────────
+        // ══════════════════════════════════════════════════════════════════════
+        //  PUBLIC API — called by SlimeController and SlimeNodeContact
+        // ══════════════════════════════════════════════════════════════════════
 
+        /// <summary>Applies horizontal movement force to center body.</summary>
         public void AddMovementForce(Vector2 force) =>
-            _centerBody?.AddForce(force, ForceMode2D.Force);
+            _center?.AddForce(force, ForceMode2D.Force);
 
         /// <summary>
-        /// Applies an impulse to all bodies proportional to their mass.
-        /// Resets damping instantly so it doesn't eat the impulse.
-        /// Triggers the jump recovery unfurl window.
+        /// Distributes a mass-proportional impulse across all bodies.
+        /// Resets damping to airborne values so the impulse isn't absorbed.
+        /// Activates the jump recovery unfurl window.
         /// </summary>
         public void AddImpulse(Vector2 impulse)
         {
-            if (_centerBody == null) return;
+            if (_center == null) return;
 
+            // Reset damping so it doesn't eat the impulse
             _perimeterDamping = airborneDamping;
             _centerDamping    = airborneCenterDamping;
             for (int i = 0; i < nodeCount; i++)
-                _perimeterBodies[i].linearDamping = _perimeterDamping;
-            _centerBody.linearDamping = _centerDamping;
+                _nodes[i].linearDamping = _perimeterDamping;
+            _center.linearDamping = _centerDamping;
 
-            _centerBody.AddForce(impulse * centerMass, ForceMode2D.Impulse);
+            _center.AddForce(impulse * centerMass, ForceMode2D.Impulse);
             for (int i = 0; i < nodeCount; i++)
-                _perimeterBodies[i].AddForce(impulse * perimeterMass, ForceMode2D.Impulse);
+                _nodes[i].AddForce(impulse * perimeterMass, ForceMode2D.Impulse);
 
             _jumpActive = true;
             _jumpTimer  = 0f;
         }
 
-        /// <summary>
-        /// Called by SlimeNodeContact on collision enter to trigger impact recovery burst.
-        /// </summary>
+        /// <summary>Triggers impact recovery burst. Called by SlimeNodeContact on landing.</summary>
         public void NotifyImpact()
         {
-            _impactRecoveryTimer = impactRecoveryDuration;
-            _jumpActive = false;
+            _impactTimer = impactRecoveryDuration;
+            _jumpActive  = false;
         }
 
         /// <summary>
-        /// Called by SlimeController each frame with the current crouch state.
-        /// While crouching: applies downward force to center + airborne nodes,
-        /// and surface-tangent flow force to grounded nodes so they slide along
-        /// geometry rather than crushing flat against it.
-        /// On release: triggers immediate recovery unless too many nodes are still
-        /// in contact (tight crevice — recovery would fight the geometry).
+        /// Sets crouch state each physics frame.
+        ///
+        /// While crouching:
+        ///   Center body receives straight downward force.
+        ///   Airborne nodes receive straight downward force (compress into gaps).
+        ///   Grounded nodes receive force along their surface tangent — this is
+        ///   the key difference from the original. Tangent force slides nodes
+        ///   along crevice walls and slopes instead of crushing them flat against
+        ///   surfaces where the solver already holds them in place.
+        ///
+        /// On release:
+        ///   If few nodes are grounded (open air), trigger recovery burst.
+        ///   If many nodes are grounded (still wedged), suppress recovery so
+        ///   shape matching doesn't fight the crevice geometry.
         /// </summary>
         public void SetCrouching(bool crouching)
         {
-            bool wascrouching = _isCrouching;
+            bool was = _isCrouching;
             _isCrouching = crouching;
 
             if (crouching)
             {
-                // Center always gets straight-down force
-                _centerBody?.AddForce(Vector2.down * crouchDownForce, ForceMode2D.Force);
+                _center?.AddForce(Vector2.down * crouchDownForce, ForceMode2D.Force);
 
                 for (int i = 0; i < nodeCount; i++)
                 {
-                    if (_nodeContacts[i].IsGrounded)
+                    if (!_contacts[i].IsGrounded)
                     {
-                        // FIX: Grounded nodes get force projected along the contact
-                        // surface tangent. This makes nodes flow along geometry
-                        // (into crevices, around corners) instead of crushing flat.
-                        Vector2 normal  = _nodeContacts[i].ContactNormal;
-                        Vector2 gravity = Vector2.down;
-
-                        // Project gravity onto the surface plane
-                        float normalComponent = Vector2.Dot(gravity, normal);
-                        Vector2 tangent = gravity - normal * normalComponent;
-
-                        // Only apply if there's meaningful tangential component
-                        // (node is on a slope or crevice wall, not flat ground)
-                        float tangentMag = tangent.magnitude;
-                        if (tangentMag > 0.1f)
-                            _perimeterBodies[i].AddForce(tangent / tangentMag * crouchDownForce);
-                        // On flat ground: no extra force on grounded nodes.
-                        // Gravity + center weight already compress. Pushing down
-                        // on nodes that are already on the floor just fights the solver.
+                        // Airborne: straight down into whatever gap is below
+                        _nodes[i].AddForce(Vector2.down * crouchDownForce);
+                        continue;
                     }
-                    else
-                    {
-                        // Airborne nodes get full downward force to compress into gaps
-                        _perimeterBodies[i].AddForce(Vector2.down * crouchDownForce);
-                    }
+
+                    // Grounded: flow along surface. SurfaceTangent is gravity-biased
+                    // by SlimeNodeContact — it points downhill on slopes and toward
+                    // body center on flat ground.
+                    Vector2 tangent = _contacts[i].SurfaceTangent;
+                    float tangentMag = tangent.magnitude;
+
+                    if (tangentMag > 0.1f)
+                        _nodes[i].AddForce(tangent / tangentMag * crouchDownForce);
+                    // On flat ground (tangent ≈ 0): no extra force. Gravity + center
+                    // mass already provide compression. Pushing down on nodes the
+                    // solver is already holding against the floor just generates
+                    // penetration forces that the anti-sink has to fight.
                 }
             }
-            else if (wascrouching)
+            else if (was)
             {
+                // Release: recover unless still wedged in a tight crevice
                 if (GroundedRatio < crouchReleaseGroundedThreshold)
                     NotifyImpact();
             }
         }
 
+        // ── Helpers ───────────────────────────────────────────────────────────
+
         /// <summary>
-        /// Returns the effective idle recovery stiffness for this frame.
-        /// Crouching multiplies it down so shape matching stops resisting compression.
+        /// Effective idle recovery stiffness. Reduced during crouch so shape
+        /// matching stops resisting compression.
         /// </summary>
-        private float EffectiveIdleStiffness =>
+        private float EffectiveStiffness =>
             _isCrouching ? idleRecoveryStiffness * crouchStiffnessMultiplier
                          : idleRecoveryStiffness;
 
-        private float EffectivePressureStrength =>
+        /// <summary>Effective pressure strength. Reduced during crouch.</summary>
+        private float EffectivePressure =>
             _isCrouching ? pressureStrength * crouchPressureMultiplier
                          : pressureStrength;
+
+        /// <summary>
+        /// Removes the component of a force vector that pushes into a surface
+        /// defined by the given outward normal. Returns the clamped vector.
+        /// If the force is entirely into the surface, returns near-zero.
+        ///
+        /// Used by both RecoverShape and ApplyPressure to prevent any internal
+        /// force from fighting the contact solver on grounded nodes.
+        /// </summary>
+        private static Vector2 ClampAwayFromSurface(Vector2 force, Vector2 surfaceNormal)
+        {
+            float intoSurface = Vector2.Dot(force, surfaceNormal);
+            if (intoSurface < 0f)
+                force -= surfaceNormal * intoSurface;
+            return force;
+        }
 
         // ── Cleanup ───────────────────────────────────────────────────────────
 
         private void OnDestroy()
         {
-            if (_nodesParent     != null) Destroy(_nodesParent);
-            if (_physicsMaterial != null) Destroy(_physicsMaterial);
+            if (_nodesParent != null) Destroy(_nodesParent);
+            if (_material    != null) Destroy(_material);
         }
     }
 }

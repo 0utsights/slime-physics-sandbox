@@ -3,55 +3,69 @@ using UnityEngine;
 namespace Hideout.Slime
 {
     /// <summary>
-    /// Attached to each perimeter node by SlimeBody.
+    /// Per-node terrain contact tracker and anti-sink corrector.
     ///
-    /// Responsibilities:
-    ///   1. Track grounded state and contact normals for SlimeBody.GroundedRatio.
-    ///   2. Anti-sink: apply a counter-force proportional to penetration depth on
-    ///      every grounded contact stay, plus a position-level safety correction in
-    ///      FixedUpdate that catches any remaining overlap the solver missed.
-    ///   3. Velocity clamp on first contact to absorb impact energy spike.
-    ///   4. Corner escape impulse when wedged between two diverging surfaces.
-    ///   5. Notify SlimeBody on first contact for impact recovery burst.
+    /// Runs at execution order -20, before SlimeBody (-10). This ordering is
+    /// load-bearing: position corrections must land before shape matching reads
+    /// node positions, otherwise recovery computes goal forces from penetrating
+    /// positions and drives nodes deeper into terrain every step.
     ///
-    /// Anti-sink design:
-    ///   Box2D resolves joint constraints before contact constraints each velocity
-    ///   iteration, so spring forces have "first say" on node velocity. With joints
-    ///   per node the solver cannot fully converge against the ground contact in the
-    ///   default iteration budget, leaving residual penetration. Two-layer correction:
-    ///     Layer 1 (force) — OnCollisionStay2D: proportional force + velocity
-    ///                       correction along contact normal each physics step.
-    ///     Layer 2 (position) — FixedUpdate: OverlapCircle check + direct position
-    ///                          teleport out of any residual overlap. Catches what
-    ///                          force correction misses.
+    /// Exposes grounded state, contact normal, and surface tangent as read-only
+    /// properties for SlimeBody to use in force clamping and crouch flow.
     ///
-    /// EXECUTION ORDER: -20, runs BEFORE SlimeBody (-10). This ensures anti-sink
-    /// position corrections are applied before shape matching forces, so recovery
-    /// operates on already-corrected positions rather than fighting the correction.
+    /// Anti-sink is two layers:
+    ///   Layer 1 (reactive)  — OnCollisionStay2D: proportional force along contact
+    ///                         normal scaled by penetration depth, plus inward
+    ///                         velocity cancellation. Handles steady-state contact.
+    ///   Layer 2 (proactive) — FixedUpdate: OverlapCircle sweep catches residual
+    ///                         overlap the force layer missed and teleports the
+    ///                         node to the surface edge. Nuclear option that
+    ///                         guarantees no frame ends with penetration.
+    ///
+    /// Why both layers: Box2D resolves joint constraints before contact constraints.
+    /// Spring forces get "first say" on velocity each iteration. The solver can't
+    /// fully converge the contact constraint in its iteration budget when joints
+    /// pull against it, leaving residual penetration that accumulates over frames.
+    /// Force correction reduces it; position correction eliminates it.
     /// </summary>
     [DefaultExecutionOrder(-20)]
     public class SlimeNodeContact : MonoBehaviour
     {
-        public bool    IsGrounded    { get; private set; }
+        // ── Public state ──────────────────────────────────────────────────────
+
+        /// <summary>True when this node has active contact with non-slime geometry.</summary>
+        public bool IsGrounded { get; private set; }
+
+        /// <summary>Outward-facing normal of the contact surface. Zero when airborne.</summary>
         public Vector2 ContactNormal { get; private set; }
 
-        private SlimeBody     _body;
-        private Rigidbody2D   _rb;
+        /// <summary>
+        /// Surface tangent derived from contact normal. Points in whichever
+        /// tangent direction has a downward component (gravity-biased), so
+        /// crouch flow forces naturally slide nodes downhill along surfaces.
+        /// Zero when airborne or on perfectly flat ground.
+        /// </summary>
+        public Vector2 SurfaceTangent { get; private set; }
+
+        // ── Private ───────────────────────────────────────────────────────────
+
+        private SlimeBody        _body;
+        private Rigidbody2D      _rb;
         private CircleCollider2D _col;
-        private float         _escapeForce;
-        private float         _maxImpactSpeed;
-        private float         _antiSinkForceScale;
 
+        private float     _escapeForce;
+        private float     _maxImpactSpeed;
+        private float     _antiSinkForceScale;
         private LayerMask _groundMask;
-
-        // Accumulated normal from OnCollisionStay for the current physics step.
-        // Averaged when multiple contacts exist, persists until next OnCollisionExit.
-        private Vector2 _accumulatedNormal;
-        private bool    _contactThisStep;
 
         private static readonly ContactPoint2D[] _contacts = new ContactPoint2D[4];
 
-        private const float SkinWidth = 0.01f; // breathing room to prevent contact flickering
+        // Small gap left after position correction to prevent the node from
+        // sitting exactly on the surface edge, which causes contact flickering
+        // as the solver alternates between "overlapping" and "separated".
+        private const float SkinWidth = 0.01f;
+
+        // ── Init ──────────────────────────────────────────────────────────────
 
         public void Init(SlimeBody body, float escapeForce, float maxImpactSpeed, float antiSinkForceScale)
         {
@@ -63,15 +77,42 @@ namespace Hideout.Slime
             _col                = GetComponent<CircleCollider2D>();
 
             int slimeLayer = LayerMask.NameToLayer("Slime");
-            _groundMask = slimeLayer != -1
-                ? ~(1 << slimeLayer)
-                : ~0;
+            _groundMask = slimeLayer != -1 ? ~(1 << slimeLayer) : ~0;
         }
 
-        // ── LAYER 1: Force-based correction ───────────────────────────────────
+        // ── Layer 2: Position correction (runs first each frame) ──────────────
+        //
+        // FixedUpdate at -20 fires before SlimeBody.FixedUpdate at -10.
+        // Residual overlap from the previous step is resolved here so that when
+        // SlimeBody reads PerimeterPositions, every node is already outside
+        // terrain. This breaks the feedback loop where recovery → penetration →
+        // anti-sink → recovery fought each other frame-over-frame.
+
+        private void FixedUpdate()
+        {
+            if (_col == null) return;
+
+            Collider2D hit = Physics2D.OverlapCircle(_rb.position, _col.radius, _groundMask);
+            if (hit == null) return;
+
+            ColliderDistance2D dist = _col.Distance(hit);
+            if (!dist.isValid || !dist.isOverlapped) return;
+
+            _rb.position += dist.normal * (-dist.distance + SkinWidth);
+
+            float vn = Vector2.Dot(_rb.linearVelocity, dist.normal);
+            if (vn < 0f)
+                _rb.linearVelocity -= dist.normal * vn;
+
+            // Position correction proves contact even without a collision callback
+            SetGrounded(dist.normal);
+        }
+
+        // ── Layer 1: Force correction (collision callbacks) ───────────────────
 
         private void OnCollisionEnter2D(Collision2D collision)
         {
+            // Absorb impact energy spike before the spring network amplifies it
             if (_rb.linearVelocity.sqrMagnitude > _maxImpactSpeed * _maxImpactSpeed)
                 _rb.linearVelocity = _rb.linearVelocity.normalized * _maxImpactSpeed;
 
@@ -81,27 +122,37 @@ namespace Hideout.Slime
         private void OnCollisionStay2D(Collision2D collision)
         {
             int count = collision.GetContacts(_contacts);
-            IsGrounded    = true;
-            _contactThisStep = true;
+            if (count == 0) return;
+
+            // Track the deepest penetration for the authoritative normal
+            float   deepest    = 0f;
+            Vector2 bestNormal = _contacts[0].normal;
 
             for (int c = 0; c < count; c++)
             {
                 ContactPoint2D contact = _contacts[c];
-                _accumulatedNormal = contact.normal; // last-write for this step
-
                 float penetration = -contact.separation;
+
+                if (penetration > deepest)
+                {
+                    deepest    = penetration;
+                    bestNormal = contact.normal;
+                }
+
+                // Proportional push-out force scaled by penetration depth
                 if (penetration > 0f)
                     _rb.AddForce(contact.normal * penetration * _antiSinkForceScale);
 
+                // Cancel inward velocity along this contact normal
                 float vn = Vector2.Dot(_rb.linearVelocity, contact.normal);
                 if (vn < 0f)
                     _rb.AddForce(contact.normal * (-vn) * _rb.mass / Time.fixedDeltaTime);
             }
 
-            // Expose the best normal for SlimeBody's grounded-aware clamping
-            ContactNormal = _accumulatedNormal;
+            SetGrounded(bestNormal);
 
-            // Corner escape: two diverging normals = wedged between surfaces
+            // Corner escape: two diverging normals means wedged between surfaces.
+            // Impulse along the averaged escape direction biased toward body center.
             if (count >= 2)
             {
                 Vector2 n0 = _contacts[0].normal;
@@ -117,38 +168,40 @@ namespace Hideout.Slime
 
         private void OnCollisionExit2D(Collision2D collision)
         {
-            IsGrounded    = false;
-            ContactNormal = Vector2.zero;
-            _accumulatedNormal = Vector2.zero;
-            _contactThisStep   = false;
+            IsGrounded     = false;
+            ContactNormal  = Vector2.zero;
+            SurfaceTangent = Vector2.zero;
         }
 
-        // ── LAYER 2: Position-based safety net ────────────────────────────────
-        // Runs every fixed step BEFORE SlimeBody (-20 vs -10).
-        // Catches any residual overlap — directly teleports the node to surface edge.
+        // ── Helpers ───────────────────────────────────────────────────────────
 
-        private void FixedUpdate()
+        /// <summary>
+        /// Sets grounded state and derives the gravity-biased surface tangent.
+        /// Called from both collision callbacks and position correction so
+        /// grounded data is always consistent.
+        /// </summary>
+        private void SetGrounded(Vector2 normal)
         {
-            if (_col == null) return;
-
-            Collider2D hit = Physics2D.OverlapCircle(_rb.position, _col.radius, _groundMask);
-            if (hit == null) return;
-
-            ColliderDistance2D dist = _col.Distance(hit);
-            if (!dist.isValid || !dist.isOverlapped) return;
-
-            // Teleport node to surface edge + skin width
-            float correction = -dist.distance + SkinWidth;
-            _rb.position += dist.normal * correction;
-
-            // Zero out the inward velocity component so the node doesn't re-penetrate
-            float vn = Vector2.Dot(_rb.linearVelocity, dist.normal);
-            if (vn < 0f)
-                _rb.linearVelocity -= dist.normal * vn;
-
-            // Update grounded state from position correction too
             IsGrounded    = true;
-            ContactNormal = dist.normal;
+            ContactNormal = normal;
+
+            // Perpendicular to normal, biased so tangent y-component points
+            // downward. On flat ground both tangents are horizontal — bias
+            // toward body center for stable crouch behavior.
+            Vector2 tangent = new Vector2(-normal.y, normal.x);
+
+            if (Mathf.Abs(tangent.y) < 0.01f)
+            {
+                Vector2 toCenter = _body.CenterPosition - (Vector2)transform.position;
+                if (Vector2.Dot(tangent, toCenter) < 0f)
+                    tangent = -tangent;
+            }
+            else if (tangent.y > 0f)
+            {
+                tangent = -tangent;
+            }
+
+            SurfaceTangent = tangent;
         }
     }
 }
