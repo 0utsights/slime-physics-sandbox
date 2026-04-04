@@ -7,9 +7,10 @@ namespace Hideout.Slime
     /// by a spring network with cross-bracing and internal pressure.
     ///
     /// Spring network topology (per node i):
-    ///   Radial   — node i ↔ center     (maintains body radius)
-    ///   Neighbor — node i ↔ node i+1   (ring integrity)
-    ///   Brace    — node i ↔ node i+2   (prevents topological inversion on impact)
+    ///   Radial   — node i ↔ center     (DistanceJoint2D, maxDistanceOnly = true)
+    ///                                   Tether only — zero compressive force into ground.
+    ///   Neighbor — node i ↔ node i+1   (SpringJoint2D — ring integrity + elasticity)
+    ///   Brace    — node i ↔ node i+2   (SpringJoint2D — prevents topological inversion)
     ///
     /// Recovery model (Müller et al. 2005 shape matching):
     ///   Every frame, compute the best-fit rigid rotation of the rest shape onto
@@ -55,10 +56,8 @@ namespace Hideout.Slime
         public float bounciness = 0.3f;
 
         [Header("Pressure")]
-        [Tooltip("Target internal volume (polygon area). Higher = puffier resistance to compression.")]
-        public float gasAmount = 1f;
-        [Tooltip("Scales outward pressure force. Higher = harder to compress.")]
-        public float pressureStrength = 8f;
+        [Tooltip("Force per unit of area deficit. Higher = harder to compress. Original used ~5.")]
+        public float pressureStrength = 5f;
 
         [Header("Shape Recovery — Idle")]
         [Tooltip("Stiffness of recovery force when resting. Low = wobbly, high = rigid. 50–200.")]
@@ -96,13 +95,18 @@ namespace Hideout.Slime
         [Tooltip("How much to reduce pressure while crouching. 0 = no resistance to shape change, 1 = no change. Keep low so slime can flow into geometry.")]
         [Range(0f, 1f)]
         public float crouchPressureMultiplier = 0.1f;
+        [Tooltip("Multiplier for neighbor spring frequency while crouching. Lower = ring reshapes easier. 0.2–0.5.")]
+        [Range(0.05f, 1f)]
+        public float crouchNeighborFrequencyMultiplier = 0.3f;
 
         [Header("Mass")]
         public float centerMass    = 2f;
         public float perimeterMass = 0.5f;
 
         [Header("Gravity")]
-        public float gravityScale = 1f;
+        public float gravityScale          = 1f;
+        [Tooltip("Separate gravity scale for perimeter nodes. Lower = less downward force per step, easier for solver to hold nodes above terrain.")]
+        public float perimeterGravityScale = 0.5f;
 
         [Header("Damping — Airborne")]
         [Tooltip("Near-zero so spring oscillation is the only damping in freefall.")]
@@ -128,6 +132,8 @@ namespace Hideout.Slime
         public float maxNodeSpeed = 20f;
         [Tooltip("Max recovery force magnitude per node. Prevents explosion on extreme deformation.")]
         public float maxRecoveryForce = 500f;
+        [Tooltip("Force scale applied per unit of ground penetration depth to push nodes back out. Passed to SlimeNodeContact.")]
+        public float antiSinkForceScale = 150f;
 
         // ── Public ────────────────────────────────────────────────────────────
 
@@ -151,9 +157,8 @@ namespace Hideout.Slime
 
         private Rigidbody2D        _centerBody;
         private Rigidbody2D[]      _perimeterBodies;
-        private SpringJoint2D[]    _radialSprings;
+        private DistanceJoint2D[]  _radialSprings;
         private SpringJoint2D[]    _neighborSprings;
-        private SpringJoint2D[]    _braceSprings;
         private SlimeNodeContact[] _nodeContacts;
 
         // Shape matching rest state — computed once at build, never modified
@@ -161,6 +166,7 @@ namespace Hideout.Slime
         private float     _totalMass;
 
         private Vector2[] _lastValidPositions;
+        private float     _restArea;  // polygon area of rest shape, computed once at build
 
         private float _perimeterDamping;
         private float _centerDamping;
@@ -180,8 +186,9 @@ namespace Hideout.Slime
 
         private void Awake()
         {
-            Physics2D.velocityIterations = 12;
-            Physics2D.positionIterations = 6;
+            Physics2D.velocityIterations = 16;
+            Physics2D.positionIterations = 8;
+            Time.fixedDeltaTime          = 0.01f; // 100 Hz — halved timestep improves solver convergence quadratically
 
             int slimeLayer = LayerMask.NameToLayer("Slime");
             if (slimeLayer != -1)
@@ -208,6 +215,7 @@ namespace Hideout.Slime
             ApplyRecovery();
             EnforceAngularSeparation();
             UpdateDamping();
+            UpdateCrouchSprings();
         }
 
         // ── Build ─────────────────────────────────────────────────────────────
@@ -215,7 +223,7 @@ namespace Hideout.Slime
         private void BuildPhysicsMaterial()
         {
             _physicsMaterial            = new PhysicsMaterial2D("SlimeMaterial");
-            _physicsMaterial.friction   = 0f;
+            _physicsMaterial.friction   = 0.4f;
             _physicsMaterial.bounciness = bounciness;
         }
 
@@ -225,9 +233,8 @@ namespace Hideout.Slime
 
             PerimeterPositions  = new Vector2[n];
             _perimeterBodies    = new Rigidbody2D[n];
-            _radialSprings      = new SpringJoint2D[n];
+            _radialSprings      = new DistanceJoint2D[n];
             _neighborSprings    = new SpringJoint2D[n];
-            _braceSprings       = new SpringJoint2D[n];
             _nodeContacts       = new SlimeNodeContact[n];
             _restOffsets        = new Vector2[n];
             _lastValidPositions = new Vector2[n];
@@ -248,29 +255,38 @@ namespace Hideout.Slime
                 _perimeterBodies[i]    = CreateNode($"Node_{i}", offset, perimeterMass, airborneDamping);
 
                 _nodeContacts[i] = _perimeterBodies[i].gameObject.AddComponent<SlimeNodeContact>();
-                _nodeContacts[i].Init(this, CornerEscapeForce, maxNodeSpeed);
+                _nodeContacts[i].Init(this, CornerEscapeForce, maxNodeSpeed, antiSinkForceScale);
             }
 
             // Total mass for centroid weighting
             _totalMass = centerMass + n * perimeterMass;
 
+            // Rest area — computed once, used by ApplyPressure to detect compression
+            _restArea = 0f;
             for (int i = 0; i < n; i++)
             {
-                // Radial: node ↔ center — set once, never changed at runtime
-                _radialSprings[i] = AddSpring(
-                    _perimeterBodies[i].gameObject, _centerBody, bodyRadius, radialFrequency);
+                int next = (i + 1) % n;
+                _restArea += _restOffsets[i].x * _restOffsets[next].y;
+                _restArea -= _restOffsets[next].x * _restOffsets[i].y;
+            }
+            _restArea = Mathf.Abs(_restArea) * 0.5f;
 
-                // Neighbor: node i ↔ node i+1
+            for (int i = 0; i < n; i++)
+            {
+                // Radial: node ↔ center — DistanceJoint2D with maxDistanceOnly.
+                var dj = _perimeterBodies[i].gameObject.AddComponent<DistanceJoint2D>();
+                dj.connectedBody         = _centerBody;
+                dj.distance              = bodyRadius;
+                dj.maxDistanceOnly       = true;
+                dj.autoConfigureDistance = false;
+                dj.enableCollision       = false;
+                _radialSprings[i]        = dj;
+
+                // Neighbor: node i ↔ node i+1 (SpringJoint2D — bidirectional restoration)
                 int   next  = (i + 1) % n;
                 float nDist = Vector2.Distance(_restOffsets[i], _restOffsets[next]);
                 _neighborSprings[i] = AddSpring(
                     _perimeterBodies[i].gameObject, _perimeterBodies[next], nDist, neighborFrequency);
-
-                // Brace: node i ↔ node i+2
-                int   skip  = (i + 2) % n;
-                float bDist = Vector2.Distance(_restOffsets[i], _restOffsets[skip]);
-                _braceSprings[i] = AddSpring(
-                    _perimeterBodies[i].gameObject, _perimeterBodies[skip], bDist, neighborFrequency);
             }
         }
 
@@ -284,14 +300,14 @@ namespace Hideout.Slime
             go.layer = slimeLayer != -1 ? slimeLayer : gameObject.layer;
 
             var rb = go.AddComponent<Rigidbody2D>();
-            rb.mass                   = mass;
-            rb.gravityScale           = gravityScale;
-            rb.constraints            = RigidbodyConstraints2D.FreezeRotation;
+            rb.mass         = mass;
+            rb.gravityScale = hasCollider ? perimeterGravityScale : gravityScale;
+            rb.constraints  = RigidbodyConstraints2D.FreezeRotation;
             rb.linearDamping          = damping;
-            rb.angularDamping         = 5f;
+            rb.angularDamping         = 0.05f;
             rb.interpolation          = RigidbodyInterpolation2D.Interpolate;
             rb.sleepMode              = RigidbodySleepMode2D.NeverSleep;
-            rb.collisionDetectionMode = CollisionDetectionMode2D.Continuous;
+            rb.collisionDetectionMode = CollisionDetectionMode2D.Discrete;
 
             if (hasCollider)
             {
@@ -338,7 +354,6 @@ namespace Hideout.Slime
 
         private void CacheCentroid()
         {
-            // Mass-weighted centroid: matches the shape matching precomputation
             Vector2 sum = _centerBody.position * centerMass;
             for (int i = 0; i < nodeCount; i++)
                 sum += PerimeterPositions[i] * perimeterMass;
@@ -361,7 +376,6 @@ namespace Hideout.Slime
 
         private void ClampVelocities()
         {
-            // Clamp center body too — movement force goes there
             _centerBody.linearVelocity =
                 Vector2.ClampMagnitude(_centerBody.linearVelocity, maxNodeSpeed);
 
@@ -371,75 +385,70 @@ namespace Hideout.Slime
         }
 
         // ── PRESSURE ─────────────────────────────────────────────────────────
-        // Shoelace polygon area → outward normal force per edge.
-        // Uses signed area to determine winding so force is always outward.
 
         private void ApplyPressure()
         {
             int n = nodeCount;
 
-            float signedArea = 0f;
+            float currentArea = 0f;
             for (int i = 0; i < n; i++)
             {
-                Vector2 a = PerimeterPositions[i];
-                Vector2 b = PerimeterPositions[(i + 1) % n];
-                signedArea += a.x * b.y - b.x * a.y;
+                int next = (i + 1) % n;
+                currentArea += PerimeterPositions[i].x * PerimeterPositions[next].y;
+                currentArea -= PerimeterPositions[next].x * PerimeterPositions[i].y;
             }
-            float area = Mathf.Abs(signedArea) * 0.5f;
-            if (area < 0.001f) return;
+            currentArea = Mathf.Abs(currentArea) * 0.5f;
 
-            float normalSign = signedArea > 0f ? 1f : -1f;
-            float pressure   = gasAmount / area * EffectivePressureStrength;
+            float deficit = _restArea - currentArea;
+            if (deficit <= 0f) return;
+
+            float forceMag = deficit * EffectivePressureStrength;
 
             for (int i = 0; i < n; i++)
             {
-                int     next    = (i + 1) % n;
-                Vector2 edge    = PerimeterPositions[next] - PerimeterPositions[i];
-                float   edgeLen = edge.magnitude;
-                if (edgeLen < 0.0001f) continue;
+                int prev = (i - 1 + n) % n;
+                int next = (i + 1) % n;
 
-                Vector2 normal = new Vector2(edge.y * normalSign, -edge.x * normalSign) / edgeLen;
-                Vector2 force  = normal * (pressure * edgeLen * 0.5f);
+                Vector2 edgePrev = PerimeterPositions[i]    - PerimeterPositions[prev];
+                Vector2 edgeNext = PerimeterPositions[next] - PerimeterPositions[i];
+                Vector2 nPrev    = new Vector2(-edgePrev.y,  edgePrev.x).normalized;
+                Vector2 nNext    = new Vector2(-edgeNext.y,  edgeNext.x).normalized;
+                Vector2 outward  = ((nPrev + nNext) * 0.5f).normalized;
 
-                _perimeterBodies[i].AddForce(force);
-                _perimeterBodies[next].AddForce(force);
+                // FIX: For grounded nodes, remove the component of pressure force
+                // that pushes into the terrain. Pressure should expand the slime
+                // outward but never push a grounded node through its contact surface.
+                if (_nodeContacts[i].IsGrounded)
+                {
+                    Vector2 normal = _nodeContacts[i].ContactNormal;
+                    float intoTerrain = Vector2.Dot(outward, -normal);
+                    if (intoTerrain > 0f)
+                        outward += normal * intoTerrain; // cancel the into-terrain component
+                    // Re-normalize; if outward is near zero the node is being pushed
+                    // directly into terrain — skip it entirely
+                    float len = outward.magnitude;
+                    if (len < 0.01f) continue;
+                    outward /= len;
+                }
+
+                _perimeterBodies[i].AddForce(outward * forceMag);
             }
         }
 
         // ── RECOVERY ─────────────────────────────────────────────────────────
-        // Müller et al. 2005 shape matching for 2D.
-        //
-        // Three recovery contexts share one RecoverShape() function:
-        //   Idle    — constant low-stiffness pull toward rest shape
-        //   Impact  — high-stiffness burst after landing, fades over impactRecoveryDuration
-        //   Jump    — medium-stiffness unfurl during the post-jump rise window
-        //
-        // The algorithm:
-        //   1. Compute current mass-weighted centroid (already in Centroid)
-        //   2. Build 2×2 cross-covariance matrix Apq from current vs rest offsets
-        //   3. Extract best-fit rotation via atan2(Apq[1,0]-Apq[0,1], Apq[0,0]+Apq[1,1])
-        //   4. Derive goal positions by rotating rest offsets by θ around current centroid
-        //   5. Apply PD force: F = stiffness*(goal-pos) - damping*velocity
-        //
-        // Springs never have their .distance modified at runtime.
-        // Springs handle elasticity; shape matching handles recovery. Different jobs.
 
         private void ApplyRecovery()
         {
             float dt = Time.fixedDeltaTime;
 
-            // ── Determine stiffness/damping for this frame ─────────────────────
             float stiffness, damping;
 
-            // Jump unfurl: check first since it has highest priority during ascent
             if (_jumpActive)
             {
                 _jumpTimer += dt;
 
-                // Cancel if upward momentum is gone (ceiling or apex)
                 if (_centerBody.linearVelocity.y < 0.5f)
                     _jumpActive = false;
-                // Cancel if window has elapsed
                 else if (_jumpTimer > jumpRecoveryDelay + jumpRecoveryDuration)
                     _jumpActive = false;
 
@@ -447,15 +456,13 @@ namespace Hideout.Slime
                 stiffness = inWindow ? jumpRecoveryStiffness : EffectiveIdleStiffness;
                 damping   = inWindow ? jumpRecoveryDamping   : idleRecoveryDamping;
             }
-            // Impact burst: fades linearly over impactRecoveryDuration
             else if (_impactRecoveryTimer > 0f)
             {
                 _impactRecoveryTimer -= dt;
-                float t = _impactRecoveryTimer / impactRecoveryDuration; // 1→0
+                float t = _impactRecoveryTimer / impactRecoveryDuration;
                 stiffness = Mathf.Lerp(EffectiveIdleStiffness,  impactRecoveryStiffness, t);
                 damping   = Mathf.Lerp(idleRecoveryDamping,     impactRecoveryDamping,   t);
             }
-            // Idle: constant baseline recovery
             else
             {
                 stiffness = EffectiveIdleStiffness;
@@ -468,6 +475,12 @@ namespace Hideout.Slime
         /// <summary>
         /// Applies Müller shape matching forces to all perimeter nodes.
         /// Pulls each node toward its goal position in the best-fit rotated rest frame.
+        ///
+        /// GROUNDED-AWARE CLAMPING: For grounded nodes, the recovery force component
+        /// that pushes into the terrain (opposing the contact normal) is removed.
+        /// This prevents shape matching from fighting the contact solver and eliminates
+        /// the primary cause of terrain intersection. The tangential component is kept
+        /// so grounded nodes still slide toward their goal positions along the surface.
         /// </summary>
         private void RecoverShape(float stiffness, float damping)
         {
@@ -486,14 +499,10 @@ namespace Hideout.Slime
                 a11 += m * p.y * q.y;
             }
 
-            // Best-fit rotation: atan2 simplification of 2D polar decomposition
             float theta = Mathf.Atan2(a10 - a01, a00 + a11);
             float cosT  = Mathf.Cos(theta);
             float sinT  = Mathf.Sin(theta);
 
-            // Shared body velocity (gravity, movement, jump) — we must NOT damp this.
-            // Only damp each node's velocity relative to the shared motion so recovery
-            // doesn't fight locomotion and gravity.
             Vector2 bodyVelocity = _centerBody.linearVelocity;
 
             for (int i = 0; i < n; i++)
@@ -503,25 +512,32 @@ namespace Hideout.Slime
                     cosT * q.x - sinT * q.y,
                     sinT * q.x + cosT * q.y);
 
-                // Relative velocity: how fast this node moves away from body-frame rest
                 Vector2 relVelocity = _perimeterBodies[i].linearVelocity - bodyVelocity;
 
-                // Stiffness pulls toward goal; damping only suppresses oscillation,
-                // not shared translation from gravity/movement
                 Vector2 force = stiffness * (goalPos - PerimeterPositions[i])
                               - damping   * relVelocity;
 
-                // Clamp stiffness force only — let damping act freely on oscillation
                 float mag = force.magnitude;
                 if (mag > maxRecoveryForce)
                     force = force * (maxRecoveryForce / mag);
+
+                // FIX: Grounded-aware clamping.
+                // If this node is touching terrain, remove the force component that
+                // pushes into the surface. Keep the tangential component so the node
+                // slides toward its goal along the surface rather than through it.
+                if (_nodeContacts[i].IsGrounded)
+                {
+                    Vector2 normal = _nodeContacts[i].ContactNormal;
+                    float intoSurface = Vector2.Dot(force, normal);
+                    if (intoSurface < 0f)
+                        force -= normal * intoSurface; // remove penetrating component
+                }
 
                 _perimeterBodies[i].AddForce(force);
             }
         }
 
         // ── ANGULAR SEPARATION ────────────────────────────────────────────────
-        // Keeps nodes evenly distributed around the ring.
 
         private void EnforceAngularSeparation()
         {
@@ -554,8 +570,6 @@ namespace Hideout.Slime
         }
 
         // ── DAMPING ───────────────────────────────────────────────────────────
-        // linearDamping driven by GroundedRatio. Spring oscillation resolves first;
-        // damping transitions slowly enough not to kill the bounce on landing.
 
         private void UpdateDamping()
         {
@@ -570,6 +584,20 @@ namespace Hideout.Slime
             for (int i = 0; i < nodeCount; i++)
                 _perimeterBodies[i].linearDamping = _perimeterDamping;
             _centerBody.linearDamping = _centerDamping;
+        }
+
+        // ── CROUCH SPRING MODULATION ──────────────────────────────────────────
+        // Reduces neighbor spring frequency while crouching so the ring can
+        // reshape to fit crevice geometry. Restores full frequency on release.
+
+        private void UpdateCrouchSprings()
+        {
+            float targetFreq = _isCrouching
+                ? neighborFrequency * crouchNeighborFrequencyMultiplier
+                : neighborFrequency;
+
+            for (int i = 0; i < nodeCount; i++)
+                _neighborSprings[i].frequency = targetFreq;
         }
 
         // ── Public API ────────────────────────────────────────────────────────
@@ -606,13 +634,14 @@ namespace Hideout.Slime
         public void NotifyImpact()
         {
             _impactRecoveryTimer = impactRecoveryDuration;
-            _jumpActive = false; // landing cancels jump unfurl
+            _jumpActive = false;
         }
 
         /// <summary>
         /// Called by SlimeController each frame with the current crouch state.
-        /// While crouching: applies downward force and reduces recovery stiffness so
-        /// the slime can deform into crevices without bouncing back out.
+        /// While crouching: applies downward force to center + airborne nodes,
+        /// and surface-tangent flow force to grounded nodes so they slide along
+        /// geometry rather than crushing flat against it.
         /// On release: triggers immediate recovery unless too many nodes are still
         /// in contact (tight crevice — recovery would fight the geometry).
         /// </summary>
@@ -623,19 +652,43 @@ namespace Hideout.Slime
 
             if (crouching)
             {
-                // Distribute downforce across all bodies so pressure is even and
-                // geometry can naturally funnel nodes into whatever shape the hole provides.
-                // Pure center-only force caused asymmetric crushing instead of funneling.
+                // Center always gets straight-down force
                 _centerBody?.AddForce(Vector2.down * crouchDownForce, ForceMode2D.Force);
+
                 for (int i = 0; i < nodeCount; i++)
-                    _perimeterBodies[i].AddForce(Vector2.down * crouchDownForce);
+                {
+                    if (_nodeContacts[i].IsGrounded)
+                    {
+                        // FIX: Grounded nodes get force projected along the contact
+                        // surface tangent. This makes nodes flow along geometry
+                        // (into crevices, around corners) instead of crushing flat.
+                        Vector2 normal  = _nodeContacts[i].ContactNormal;
+                        Vector2 gravity = Vector2.down;
+
+                        // Project gravity onto the surface plane
+                        float normalComponent = Vector2.Dot(gravity, normal);
+                        Vector2 tangent = gravity - normal * normalComponent;
+
+                        // Only apply if there's meaningful tangential component
+                        // (node is on a slope or crevice wall, not flat ground)
+                        float tangentMag = tangent.magnitude;
+                        if (tangentMag > 0.1f)
+                            _perimeterBodies[i].AddForce(tangent / tangentMag * crouchDownForce);
+                        // On flat ground: no extra force on grounded nodes.
+                        // Gravity + center weight already compress. Pushing down
+                        // on nodes that are already on the floor just fights the solver.
+                    }
+                    else
+                    {
+                        // Airborne nodes get full downward force to compress into gaps
+                        _perimeterBodies[i].AddForce(Vector2.down * crouchDownForce);
+                    }
+                }
             }
             else if (wascrouching)
             {
-                // Released crouch — recover immediately unless we're still wedged
-                // in a crevice (most nodes still grounded = no room to expand)
                 if (GroundedRatio < crouchReleaseGroundedThreshold)
-                    NotifyImpact(); // reuse impact burst: fast stiffness recovery
+                    NotifyImpact();
             }
         }
 

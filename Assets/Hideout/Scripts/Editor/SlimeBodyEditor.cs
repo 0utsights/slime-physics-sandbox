@@ -37,7 +37,6 @@ namespace Hideout.Slime.Editor
             });
 
             DrawSection("Pressure", () => {
-                DrawProp("gasAmount",        "Gas Amount");
                 DrawProp("pressureStrength", "Pressure Strength");
             });
 
@@ -53,10 +52,11 @@ namespace Hideout.Slime.Editor
             });
 
             DrawSection("Crouch", () => {
-                DrawProp("crouchDownForce",                "Down Force");
-                DrawProp("crouchStiffnessMultiplier",      "Stiffness Multiplier");
-                DrawProp("crouchPressureMultiplier",       "Pressure Multiplier");
-                DrawProp("crouchReleaseGroundedThreshold", "Release Threshold");
+                DrawProp("crouchDownForce",                    "Down Force");
+                DrawProp("crouchStiffnessMultiplier",          "Stiffness Multiplier");
+                DrawProp("crouchPressureMultiplier",           "Pressure Multiplier");
+                DrawProp("crouchNeighborFrequencyMultiplier",  "Neighbor Freq Multiplier");
+                DrawProp("crouchReleaseGroundedThreshold",     "Release Threshold");
             });
 
             DrawSection("Shape Recovery — Jump", () => {
@@ -72,7 +72,8 @@ namespace Hideout.Slime.Editor
             });
 
             DrawSection("Gravity", () => {
-                DrawProp("gravityScale", "Gravity Scale");
+                DrawProp("gravityScale",          "Center Gravity Scale");
+                DrawProp("perimeterGravityScale", "Perimeter Gravity Scale");
             });
 
             DrawSection("Damping — Airborne", () => {
@@ -92,8 +93,9 @@ namespace Hideout.Slime.Editor
             });
 
             DrawSection("Safety", () => {
-                DrawProp("maxNodeSpeed",     "Max Node Speed");
-                DrawProp("maxRecoveryForce", "Max Recovery Force");
+                DrawProp("maxNodeSpeed",       "Max Node Speed");
+                DrawProp("maxRecoveryForce",   "Max Recovery Force");
+                DrawProp("antiSinkForceScale", "Anti-Sink Force Scale");
             });
 
             serializedObject.ApplyModifiedProperties();
