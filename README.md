@@ -1,7 +1,8 @@
 # Hideout — One-Bit Slime
 
-A Unity / C# soft-body playground: jump onto a landing, deform down a slope,
-try a low passage, and reach the flag. The physics prototype began in April 2026;
+A Unity / C# soft-body sandbox focused on responsive movement and deformation:
+explore slopes, landings, drops, and a low passage at your own pace.
+The physics prototype began in April 2026;
 the playground and fixes are being prepared in October 2026.
 
 **Status: local work in progress. The current changes have not been compiled,
@@ -28,7 +29,8 @@ a different rendering integration. Do not change pipelines just to import it.
 - `SlimeMesh`: a triangle fan with Catmull–Rom boundary smoothing.
 - `SlimeController`: buffered jump input and coyote time.
 - `OneBitCamera` / `PaletteManager`: luminance thresholding and two palette colors.
-- `SlimePlayground`: a small demonstration, reset, controls, timer, and goal.
+- `SlimePlayground`: an environment for trying different contacts, with controls
+  and a full-body reset. There is no timer or finish condition.
 
 This combines Unity's solver with custom recovery forces; it is not a new physics
 engine. The mesh is a visual approximation and is not the collision boundary.
@@ -40,7 +42,7 @@ engine. The mesh is a visual approximation and is not the collision boundary.
 - Added keyboard-null handling, opposing-input cancellation, timed jump buffering,
   and upward-facing support checks independent of smoothed deformation state.
 - Retained remaining contacts when one collision exits.
-- Added full-body reset, a demo course, and shader inclusion for player builds.
+- Added full-body reset, a physics sandbox, and shader inclusion for player builds.
 - Moved global physics timing/iteration settings into the demo, with restoration.
 - Added Edit Mode regressions for pressure direction and immediate palette colors.
 
@@ -53,10 +55,16 @@ Run the Edit Mode tests in Window → General → Test Runner. Then verify:
 - Enter and leave the low passage without sinking or unstable node motion.
 - Reset while airborne and while deformed; confirm the mesh and body recover.
 - Leave the app unfocused, return, and verify input and timing.
-- Make a Windows build; confirm the shader remains present and the finish works.
+- Make a Windows build; confirm the shader remains present and reset works.
 - Profile CPU time and allocations before stating any performance numbers.
 
 ## Limitations and scope
+
+The priorities are environment design and physics feel. Tune acceleration,
+braking, jump response, landing recovery, and squeezing in the editor, one change
+at a time. Judge each change on flat ground, slopes, ledges, and the low passage
+before keeping it. A visually attractive environment should also make those
+interactions easy to see and repeat.
 
 Keep this as a mechanics demo. No networking, AI, extra levels, or account system
 is needed. The contact correction currently queries one overlapping collider per

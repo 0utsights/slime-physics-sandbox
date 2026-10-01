@@ -16,9 +16,6 @@ namespace Hideout.Demo
         private Sprite _square;
         private Texture2D _texture;
         private GameObject _leftEye, _rightEye;
-        private float _startedAt;
-        private float _finishTime;
-        private bool _finished;
         private float _previousStep;
         private int _previousVelocityIterations, _previousPositionIterations;
         private GUIStyle _title, _body, _small;
@@ -64,11 +61,9 @@ namespace Hideout.Demo
             Block("Slope", new Vector2(-2.7f, -0.6f), new Vector2(2.5f, 0.35f), -18f);
             Block("Low passage", new Vector2(0.5f, 0.05f), new Vector2(2.5f, 0.5f));
             Block("Step", new Vector2(4.6f, -0.4f), new Vector2(2f, 1.2f));
-            Block("Finish platform", new Vector2(8, 0f), new Vector2(2.5f, 2f));
+            Block("Drop ledge", new Vector2(8, 0f), new Vector2(2.5f, 2f));
             Block("Left boundary", new Vector2(-12, 1), new Vector2(0.5f, 5));
             Block("Right boundary", new Vector2(12, 1), new Vector2(0.5f, 5));
-            Block("Finish post", new Vector2(8.8f, 1.7f), new Vector2(0.06f, 1.4f), solid: false);
-            Block("Finish flag", new Vector2(9.05f, 2.25f), new Vector2(0.5f, 0.35f), solid: false);
             _leftEye = Block("Left eye", Spawn, new Vector2(0.045f, 0.075f), solid: false);
             _rightEye = Block("Right eye", Spawn, new Vector2(0.045f, 0.075f), solid: false);
             foreach (var eye in new[] { _leftEye, _rightEye })
@@ -77,7 +72,7 @@ namespace Hideout.Demo
                 renderer.color = Color.black;
                 renderer.sortingOrder = 2;
             }
-            ResetRun();
+            ResetBody();
         }
 
         private GameObject Block(string label, Vector2 position, Vector2 size, float rotation = 0f, bool solid = true)
@@ -108,23 +103,15 @@ namespace Hideout.Demo
         {
             if (_slime == null || _camera == null) return;
             _camera.orthographicSize = Mathf.Max(6f, 12.5f / Mathf.Max(0.1f, _camera.aspect));
-            if (Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame) ResetRun();
+            if (Keyboard.current != null && Keyboard.current.rKey.wasPressedThisFrame) ResetBody();
             Vector2 position = _slime.CenterPosition;
             if (position.y < -5f || float.IsNaN(position.x) || float.IsNaN(position.y) ||
-                float.IsInfinity(position.x) || float.IsInfinity(position.y)) ResetRun();
-            if (!_finished && position.x > 7.2f && position.x < 9.5f &&
-                position.y > 1.15f && position.y < 3f && _slime.HasSupport)
-            {
-                _finished = true;
-                _finishTime = Time.time - _startedAt;
-            }
+                float.IsInfinity(position.x) || float.IsInfinity(position.y)) ResetBody();
         }
 
-        private void ResetRun()
+        private void ResetBody()
         {
             _slime.ResetPose(Spawn);
-            _startedAt = Time.time;
-            _finished = false;
         }
 
         private void OnGUI()
@@ -142,15 +129,9 @@ namespace Hideout.Demo
             GUI.matrix = Matrix4x4.TRS(new Vector3((Screen.width - 1280 * scale) / 2,
                 (Screen.height - 720 * scale) / 2, 0), Quaternion.identity, Vector3.one * scale);
             GUI.Label(new Rect(44, 26, 900, 28), "HIDEOUT  /  UNITY PHYSICS PLAYGROUND", _small);
-            GUI.Label(new Rect(42, 58, 900, 58), "Small body. Big possibilities.", _title);
-            GUI.Label(new Rect(44, 121, 960, 32), "Jump, land, and squeeze through a world in two colors.", _body);
+            GUI.Label(new Rect(42, 58, 900, 58), "Slime physics sandbox", _title);
+            GUI.Label(new Rect(44, 121, 960, 32), "Explore slopes, drops, and tight spaces. Take your time.", _body);
             GUI.Label(new Rect(44, 655, 1040, 34), "A / D  MOVE     SPACE  JUMP     S  SQUEEZE     R  RESET", _body);
-            float seconds = _finished ? _finishTime : Time.time - _startedAt;
-            GUI.Label(new Rect(1080, 34, 160, 32), seconds.ToString("0.0") + " s", _body);
-            if (_finished)
-            {
-                GUI.Label(new Rect(44, 182, 1000, 40), "Made it! Explore some more, or press R for another run.", _body);
-            }
             GUI.matrix = previous;
         }
 
