@@ -52,7 +52,7 @@ namespace Hideout
         public void SetPaletteImmediate(Color dark, Color light)
         {
             _currentA = dark;
-            _currentB = dark;
+            _currentB = light;
             _targetA = dark;
             _targetB = light;
             PushToShader();
@@ -67,6 +67,11 @@ namespace Hideout
         {
             _targetA = colorA;
             _targetB = colorB;
+        }
+
+        private void OnDestroy()
+        {
+            if (Instance == this) Instance = null;
         }
     }
 }

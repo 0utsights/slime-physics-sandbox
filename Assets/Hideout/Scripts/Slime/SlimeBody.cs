@@ -41,7 +41,7 @@ namespace Hideout.Slime
     ///   (gravity-biased, computed by SlimeNodeContact) so they flow along
     ///   geometry into crevices rather than crushing flat.
     ///
-    /// Zero per-frame GC allocation. All tunable via inspector.
+    /// Cached simulation buffers; allocation behavior still needs profiling.
     /// </summary>
     [DefaultExecutionOrder(-10)]
     public class SlimeBody : MonoBehaviour
@@ -57,9 +57,6 @@ namespace Hideout.Slime
         // ── Inspector: Springs ────────────────────────────────────────────────
 
         [Header("Springs")]
-        [Tooltip("Radial tether frequency (node↔center). 3–12 Hz.")]
-        public float radialFrequency = 6f;
-
         [Tooltip("Neighbor ring spring frequency (node↔node).")]
         public float neighborFrequency = 4f;
 
@@ -174,6 +171,20 @@ namespace Hideout.Slime
         /// <summary>0 = fully airborne, 1 = all nodes grounded. Smoothed.</summary>
         public float GroundedRatio { get; private set; }
 
+        // Jump eligibility uses current upward-facing contacts, not the smoothed
+        // deformation ratio (which can stay positive after leaving the floor).
+        public bool HasSupport
+        {
+            get
+            {
+                if (_contacts == null) return false;
+                foreach (var contact in _contacts)
+                    if (contact.IsGrounded && contact.ContactNormal.y >= 0.5f)
+                        return true;
+                return false;
+            }
+        }
+
         /// <summary>Mass-weighted centroid. Cached each FixedUpdate.</summary>
         public Vector2 Centroid { get; private set; }
 
@@ -181,7 +192,6 @@ namespace Hideout.Slime
 
         private Rigidbody2D        _center;
         private Rigidbody2D[]      _nodes;
-        private DistanceJoint2D[]  _radialJoints;
         private SpringJoint2D[]    _neighborSprings;
         private SlimeNodeContact[] _contacts;
 
@@ -208,6 +218,10 @@ namespace Hideout.Slime
 
         private void Awake()
         {
+            nodeCount = Mathf.Clamp(nodeCount, 6, 24);
+            bodyRadius = Mathf.Max(0.05f, bodyRadius);
+            centerMass = Mathf.Max(0.01f, centerMass);
+            perimeterMass = Mathf.Max(0.01f, perimeterMass);
             ConfigurePhysics();
             BuildBody();
             _perimeterDamping = airborneDamping;
@@ -224,10 +238,6 @@ namespace Hideout.Slime
 
         private void ConfigurePhysics()
         {
-            Physics2D.velocityIterations = 16;
-            Physics2D.positionIterations = 8;
-            Time.fixedDeltaTime          = 0.01f;
-
             int slimeLayer = LayerMask.NameToLayer("Slime");
             if (slimeLayer != -1)
                 Physics2D.IgnoreLayerCollision(slimeLayer, slimeLayer, true);
@@ -247,7 +257,6 @@ namespace Hideout.Slime
 
             PerimeterPositions  = new Vector2[n];
             _nodes              = new Rigidbody2D[n];
-            _radialJoints       = new DistanceJoint2D[n];
             _neighborSprings    = new SpringJoint2D[n];
             _contacts           = new SlimeNodeContact[n];
             _restOffsets        = new Vector2[n];
@@ -297,7 +306,6 @@ namespace Hideout.Slime
                 dj.maxDistanceOnly      = true;
                 dj.autoConfigureDistance = false;
                 dj.enableCollision      = false;
-                _radialJoints[i]        = dj;
 
                 // Neighbor spring
                 int next    = (i + 1) % n;
@@ -462,8 +470,10 @@ namespace Hideout.Slime
                 // Outward normal at node: average of adjacent edge perpendiculars
                 Vector2 ePrev   = PerimeterPositions[i]    - PerimeterPositions[prev];
                 Vector2 eNext   = PerimeterPositions[next] - PerimeterPositions[i];
-                Vector2 nPrev   = new Vector2(-ePrev.y, ePrev.x).normalized;
-                Vector2 nNext   = new Vector2(-eNext.y, eNext.x).normalized;
+                // Nodes are built counterclockwise, so the right-hand edge
+                // perpendicular points outward. Left-hand normals compress it.
+                Vector2 nPrev   = SlimeMath.OutwardNormal(ePrev);
+                Vector2 nNext   = SlimeMath.OutwardNormal(eNext);
                 Vector2 outward = ((nPrev + nNext) * 0.5f).normalized;
 
                 // Terrain clamp: strip the into-surface component
@@ -678,6 +688,33 @@ namespace Hideout.Slime
         {
             _impactTimer = impactRecoveryDuration;
             _jumpActive  = false;
+        }
+
+        /// <summary>Restores the complete spring body, not just its root transform.</summary>
+        public void ResetPose(Vector2 position)
+        {
+            if (_center == null) return;
+            _center.position = position;
+            _center.linearVelocity = Vector2.zero;
+            _center.angularVelocity = 0f;
+            for (int i = 0; i < nodeCount; i++)
+            {
+                Vector2 nodePosition = position + _restOffsets[i];
+                _nodes[i].position = nodePosition;
+                _nodes[i].linearVelocity = Vector2.zero;
+                _nodes[i].angularVelocity = 0f;
+                _lastValidPositions[i] = nodePosition;
+                PerimeterPositions[i] = nodePosition;
+                _contacts[i].ClearContact();
+            }
+            _isCrouching = false;
+            _jumpActive = false;
+            _impactTimer = 0f;
+            GroundedRatio = 0f;
+            Centroid = position;
+            UpdateCrouchSprings();
+            GetComponent<SlimeMesh>()?.ResetVisualState();
+            GetComponent<SlimeController>()?.ResetInputState();
         }
 
         /// <summary>

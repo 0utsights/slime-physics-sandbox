@@ -27,7 +27,6 @@ namespace Hideout.Slime.Editor
             });
 
             Section("Springs", () => {
-                Prop("radialFrequency",   "Radial Frequency");
                 Prop("neighborFrequency", "Neighbor Frequency");
                 Prop("springDamping",     "Spring Damping");
             });

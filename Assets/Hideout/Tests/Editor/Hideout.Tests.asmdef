@@ -1,0 +1,6 @@
+{
+  "name": "Hideout.Tests",
+  "references": ["Hideout.Runtime"],
+  "includePlatforms": ["Editor"],
+  "optionalUnityReferences": ["TestAssemblies"]
+}

@@ -37,6 +37,7 @@ namespace Hideout.Slime
         private int _smoothedCount;
         private bool _ready;
         private bool _initialized;
+        private Material _ownedMaterial;
 
         private IEnumerator Start()
         {
@@ -63,17 +64,19 @@ namespace Hideout.Slime
 
             if (material == null)
             {
-                material = new Material(Shader.Find("Sprites/Default"));
+                _ownedMaterial = new Material(Shader.Find("Sprites/Default"));
+                material = _ownedMaterial;
                 material.color = Color.white;
             }
 
-            _renderer.material = material;
+            _renderer.sharedMaterial = material;
             _renderer.sortingLayerName = sortingLayerName;
             _renderer.sortingOrder = sortingOrder;
         }
 
         private void PreAllocate()
         {
+            smoothSteps = Mathf.Clamp(smoothSteps, 1, 8);
             _smoothedCount     = _body.nodeCount * smoothSteps;
             int vertexCount    = _smoothedCount + 1;
             _vertices          = new Vector3[vertexCount];
@@ -217,7 +220,10 @@ namespace Hideout.Slime
         private void OnDestroy()
         {
             if (_mesh != null) Destroy(_mesh);
+            if (_ownedMaterial != null) Destroy(_ownedMaterial);
         }
+
+        public void ResetVisualState() => _initialized = false;
     }
 }
 

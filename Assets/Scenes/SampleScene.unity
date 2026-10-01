@@ -285,7 +285,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 530543f77b9ae6f0492a55c6d5eeee44, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::Hideout.PaletteManager
+  m_EditorClassIdentifier: Hideout.Runtime::Hideout.PaletteManager
   colorA: {r: 0.1, g: 0.08, b: 0.08, a: 1}
   colorB: {r: 0.9, g: 0.87, b: 0.78, a: 1}
   transitionSpeed: 2
@@ -408,7 +408,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: e7dabbb8baa8d5dd7adb12a1bc5b320a, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::Hideout.Rendering.OneBitCamera
+  m_EditorClassIdentifier: Hideout.Runtime::Hideout.Rendering.OneBitCamera
 --- !u!1 &1360833156
 GameObject:
   m_ObjectHideFlags: 0
@@ -592,11 +592,10 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: effbe2a146ed6a9fd8074b642493cf5a, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::Hideout.Slime.SlimeBody
+  m_EditorClassIdentifier: Hideout.Runtime::Hideout.Slime.SlimeBody
   nodeCount: 12
   bodyRadius: 0.5
   colliderRadius: 0.05
-  radialFrequency: 6
   neighborFrequency: 4
   springDamping: 0.2
   bounciness: 0.3
@@ -640,7 +639,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 444e68e9cb7ec1dd0af2b21295eeab3f, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::Hideout.Slime.SlimeMesh
+  m_EditorClassIdentifier: Hideout.Runtime::Hideout.Slime.SlimeMesh
   smoothSteps: 4
   material: {fileID: 0}
   sortingLayerName: Default
@@ -658,7 +657,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 636421d866fbde8daa46ae79ef1408e7, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::Hideout.Slime.SlimeController
+  m_EditorClassIdentifier: Hideout.Runtime::Hideout.Slime.SlimeController
   moveForce: 12
   jumpForce: 5
   jumpCoyoteTime: 0.1

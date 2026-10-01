@@ -20,7 +20,7 @@ namespace Hideout.Slime
     ///   Layer 2 (proactive) — FixedUpdate: OverlapCircle sweep catches residual
     ///                         overlap the force layer missed and teleports the
     ///                         node to the surface edge. Nuclear option that
-    ///                         guarantees no frame ends with penetration.
+    ///                         reduces residual penetration. Corners still need testing.
     ///
     /// Why both layers: Box2D resolves joint constraints before contact constraints.
     /// Spring forces get "first say" on velocity each iteration. The solver can't
@@ -168,8 +168,16 @@ namespace Hideout.Slime
 
         private void OnCollisionExit2D(Collision2D collision)
         {
-            IsGrounded     = false;
-            ContactNormal  = Vector2.zero;
+            // One surface may exit while another remains in contact.
+            int count = _col.GetContacts(_contacts);
+            if (count > 0) SetGrounded(_contacts[0].normal);
+            else ClearContact();
+        }
+
+        public void ClearContact()
+        {
+            IsGrounded = false;
+            ContactNormal = Vector2.zero;
             SurfaceTangent = Vector2.zero;
         }
 
