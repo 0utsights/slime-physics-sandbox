@@ -128,7 +128,7 @@ namespace Hideout.Demo
             float scale = Mathf.Min(Screen.width / 1280f, Screen.height / 720f);
             GUI.matrix = Matrix4x4.TRS(new Vector3((Screen.width - 1280 * scale) / 2,
                 (Screen.height - 720 * scale) / 2, 0), Quaternion.identity, Vector3.one * scale);
-            GUI.Label(new Rect(44, 26, 900, 28), "HIDEOUT  /  UNITY PHYSICS PLAYGROUND", _small);
+            GUI.Label(new Rect(44, 26, 900, 28), "SLIME PHYSICS SANDBOX  /  UNITY + C#", _small);
             GUI.Label(new Rect(42, 58, 900, 58), "Slime physics sandbox", _title);
             GUI.Label(new Rect(44, 121, 960, 32), "Explore slopes, drops, and tight spaces. Take your time.", _body);
             GUI.Label(new Rect(44, 655, 1040, 34), "A / D  MOVE     SPACE  JUMP     S  SQUEEZE     R  RESET", _body);
